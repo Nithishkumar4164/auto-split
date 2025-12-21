@@ -57,43 +57,57 @@ gcloud services enable storage.googleapis.com
 
 ## Step 2: Configure Service Account
 
-### 2.1 Create Service Account
+The deployment script (`deploy.sh`) automatically creates and configures the service account. However, you can also set it up manually:
 
-```bash
-gcloud iam service-accounts create autosplit-sa \
-    --display-name="AutoSplit Service Account"
-```
+### 2.1 Automatic Setup (Recommended)
 
-### 2.2 Grant Permissions
+The `deploy.sh` script automatically:
+- Creates the service account `autosplit-service@PROJECT_ID.iam.gserviceaccount.com`
+- Grants necessary permissions:
+  - `roles/storage.objectViewer` - To read files from GCS buckets
+  - `roles/drive.readonly` - To read files from Google Drive (if using Drive events)
+- Attaches the service account to the Cloud Run service
+
+### 2.2 Manual Setup (Optional)
+
+If you prefer to set it up manually:
 
 ```bash
 PROJECT_ID=$(gcloud config get-value project)
-SA_EMAIL="autosplit-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+SA_EMAIL="autosplit-service@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# Grant Drive access
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member="serviceAccount:${SA_EMAIL}" \
-    --role="roles/drive.readonly"
+# Create service account
+gcloud iam service-accounts create autosplit-service \
+    --display-name="AutoSplit Service Account" \
+    --project=$PROJECT_ID
 
-# Grant Storage access
+# Grant Storage access (required for GCS downloads)
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:${SA_EMAIL}" \
     --role="roles/storage.objectViewer"
 
-# Grant Cloud Run invoker
+# Grant Drive access (if using Google Drive events)
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:${SA_EMAIL}" \
-    --role="roles/run.invoker"
+    --role="roles/drive.readonly"
 ```
 
-### 2.3 Create and Download Key
+### 2.3 Local Development Credentials (Optional)
+
+For local development, you can create and download a service account key:
 
 ```bash
 gcloud iam service-accounts keys create service-account-key.json \
     --iam-account="${SA_EMAIL}"
+
+# Set environment variable for local development
+export GOOGLE_APPLICATION_CREDENTIALS="./service-account-key.json"
 ```
 
-⚠️ **Important**: Keep this key secure and never commit it to version control!
+⚠️ **Important**: 
+- Keep service account keys secure and never commit them to version control!
+- In Cloud Run, the service account is automatically attached and used via Application Default Credentials (ADC)
+- You don't need to set `GOOGLE_APPLICATION_CREDENTIALS` in Cloud Run - the attached service account is used automatically
 
 ## Step 3: Set Up Google Cloud Storage
 
@@ -331,6 +345,37 @@ curl -X POST $SERVICE_URL/aliases \
    ```bash
    gcloud logging read "resource.type=eventarc.googleapis.com/trigger"
    ```
+
+### Issue: Permission denied when accessing GCS objects (storage.objects.get)
+
+**Solution:**
+1. Verify the Cloud Run service has a service account attached:
+   ```bash
+   gcloud run services describe autosplit \
+       --platform managed \
+       --region us-central1 \
+       --format="value(spec.template.spec.serviceAccountName)"
+   ```
+2. Ensure the service account has `storage.objectViewer` role:
+   ```bash
+   PROJECT_ID=$(gcloud config get-value project)
+   SA_EMAIL="autosplit-service@${PROJECT_ID}.iam.gserviceaccount.com"
+   gcloud projects get-iam-policy $PROJECT_ID \
+       --flatten="bindings[].members" \
+       --filter="bindings.members:serviceAccount:${SA_EMAIL}"
+   ```
+3. If missing, grant the permission:
+   ```bash
+   gcloud projects add-iam-policy-binding $PROJECT_ID \
+       --member="serviceAccount:${SA_EMAIL}" \
+       --role="roles/storage.objectViewer"
+   ```
+4. Redeploy the service to ensure the service account is attached:
+   ```bash
+   ./deploy.sh $PROJECT_ID us-central1
+   ```
+
+**Note**: The code now automatically uses the service account attached to Cloud Run via Application Default Credentials (ADC). No need to set `GOOGLE_APPLICATION_CREDENTIALS` environment variable in Cloud Run.
 
 ### Issue: OCR not working
 

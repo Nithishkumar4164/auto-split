@@ -10,12 +10,14 @@ from alias_manager import AliasManager
 from utr_tracker import UTRTracker
 from splitwise_client import SplitwiseClient
 from drive_handler import DriveHandler
+from config import Config
 
 logger = logging.getLogger(__name__)
 
 # Try to import GCS client (optional dependency)
 try:
     from google.cloud import storage
+    from google.oauth2 import service_account
     GCS_AVAILABLE = True
 except ImportError:
     GCS_AVAILABLE = False
@@ -346,28 +348,25 @@ class ExpenseProcessor:
             True if successful, False otherwise
         """
         try:
-            # Try using mediaLink first (simpler, no auth needed if using service account)
-            if media_link:
-                try:
-                    logger.info(f"Downloading from mediaLink: {media_link}")
-                    response = requests.get(media_link, timeout=30)
-                    response.raise_for_status()
-                    
-                    # Create directories if needed
-                    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-                    
-                    with open(destination_path, 'wb') as f:
-                        f.write(response.content)
-                    
-                    logger.info(f"Downloaded from mediaLink to {destination_path}")
-                    return True
-                except Exception as e:
-                    logger.warning(f"Failed to download from mediaLink: {e}, trying GCS client")
-            
-            # Fallback to GCS client if available
+            # Use GCS client with proper authentication (preferred method)
             if GCS_AVAILABLE:
                 try:
-                    storage_client = storage.Client()
+                    # Initialize storage client with service account credentials if available
+                    credentials_path = Config.GOOGLE_APPLICATION_CREDENTIALS
+                    if credentials_path and os.path.exists(credentials_path):
+                        logger.info(f"Using service account credentials from: {credentials_path}")
+                        credentials = service_account.Credentials.from_service_account_file(
+                            credentials_path,
+                            scopes=['https://www.googleapis.com/auth/cloud-platform']
+                        )
+                        storage_client = storage.Client(credentials=credentials, project=Config.GOOGLE_CLOUD_PROJECT)
+                    else:
+                        # Use default credentials (Application Default Credentials)
+                        # In Cloud Run, this will use the attached service account automatically
+                        # In local dev, this will use gcloud auth application-default login credentials
+                        logger.info("Using Application Default Credentials (ADC)")
+                        storage_client = storage.Client(project=Config.GOOGLE_CLOUD_PROJECT)
+                    
                     bucket = storage_client.bucket(bucket_name)
                     blob = bucket.blob(blob_name)
                     
@@ -381,10 +380,46 @@ class ExpenseProcessor:
                     return True
                 except Exception as e:
                     logger.error(f"Error downloading from GCS client: {e}", exc_info=True)
+                    # Fall through to try mediaLink if available
+                    if not media_link:
+                        return False
+            
+            # Fallback: Try using mediaLink with authenticated request
+            if media_link:
+                try:
+                    logger.info(f"Downloading from mediaLink: {media_link}")
+                    
+                    # If we have credentials, use them to authenticate the request
+                    if GCS_AVAILABLE and Config.GOOGLE_APPLICATION_CREDENTIALS and os.path.exists(Config.GOOGLE_APPLICATION_CREDENTIALS):
+                        credentials = service_account.Credentials.from_service_account_file(
+                            Config.GOOGLE_APPLICATION_CREDENTIALS,
+                            scopes=['https://www.googleapis.com/auth/cloud-platform']
+                        )
+                        # Refresh credentials to get access token
+                        credentials.refresh(requests.Request())
+                        # Add authorization header
+                        headers = {'Authorization': f'Bearer {credentials.token}'}
+                        response = requests.get(media_link, headers=headers, timeout=30)
+                    else:
+                        # Try without auth (may work if bucket is public or using default credentials)
+                        response = requests.get(media_link, timeout=30)
+                    
+                    response.raise_for_status()
+                    
+                    # Create directories if needed
+                    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+                    
+                    with open(destination_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    logger.info(f"Downloaded from mediaLink to {destination_path}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to download from mediaLink: {e}", exc_info=True)
                     return False
-            else:
-                logger.error("GCS client not available and mediaLink download failed")
-                return False
+            
+            logger.error("GCS client not available and no mediaLink provided")
+            return False
                 
         except Exception as e:
             logger.error(f"Error downloading from GCS: {e}", exc_info=True)

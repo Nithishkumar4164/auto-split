@@ -30,8 +30,10 @@ steps:
       - '300'
       - '--max-instances'
       - '10'
+      - '--service-account'
+      - 'autosplit-service@$PROJECT_ID.iam.gserviceaccount.com'
       - '--set-env-vars'
-      - 'LOG_LEVEL=INFO,TESSERACT_CMD=/usr/bin/tesseract'
+      - 'LOG_LEVEL=INFO,TESSERACT_CMD=/usr/bin/tesseract,GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
 
 # Store images in Container Registry
 images:
