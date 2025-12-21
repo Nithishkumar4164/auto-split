@@ -162,7 +162,6 @@ class SplitwiseAPIClient(SplitwiseBase):
             expense = Expense()
             expense.setCost(str(cost))
             expense.setDescription(description)
-            expense.setCurrencyCode('INR')  # Set Indian Rupees as currency
             
             if group_id:
                 expense.setGroupId(int(group_id))
@@ -172,63 +171,60 @@ class SplitwiseAPIClient(SplitwiseBase):
             current_user_expense.setId(current_user.getId())
             current_user_expense.setPaidShare(str(cost))
             
-            # Calculate owed share
+            # Calculate owed share with rounding
             total_users = len(friend_ids) + 1  # Friends + current user
             owed_per_person = cost / total_users
             
-            current_user_expense.setOwedShare(str(owed_per_person))
+            # Round each person's share to 2 decimal places
+            rounded_owed_per_person = round(owed_per_person, 2)
+            
+            # Calculate sum of all rounded shares
+            total_rounded_shares = rounded_owed_per_person * total_users
+            
+            # Calculate difference (remainder)
+            remainder = cost - total_rounded_shares
+            
+            # If remainder is positive and less than 1, add it to current user's share
+            current_user_owed = rounded_owed_per_person
+            if 0 < remainder < 1.0:
+                current_user_owed = round(current_user_owed + remainder, 2)
+                logger.info(f"Adding remainder {remainder:.2f} to current user's share. New share: {current_user_owed:.2f}")
+            elif remainder != 0:
+                logger.debug(f"Remainder {remainder:.2f} is outside threshold (< 1), not adjusting")
+            
+            current_user_expense.setOwedShare(str(current_user_owed))
             
             users = [current_user_expense]
             
-            # Add friends
+            # Add friends with rounded shares
             for friend_id in friend_ids:
                 friend_expense = ExpenseUser()
                 friend_expense.setId(friend_id)
                 friend_expense.setPaidShare('0.00')
-                friend_expense.setOwedShare(str(owed_per_person))
+                friend_expense.setOwedShare(str(rounded_owed_per_person))
                 users.append(friend_expense)
             
             expense.setUsers(users)
             
-            # Log what we're about to send
-            logger.info(f"Creating expense with:")
-            logger.info(f"  Description: {description}")
-            logger.info(f"  Cost: {cost}")
-            logger.info(f"  Currency: INR")
-            logger.info(f"  Group ID: {group_id if group_id else 'None (outside groups)'}")
-            logger.info(f"  Users: {[(u.getId(), u.getPaidShare(), u.getOwedShare()) for u in users]}")
-            
-            # Set receipt if provided (but this might cause issues, so catch errors)
+            # Set receipt if provided
             if image_path:
                 try:
                     expense.setReceipt(image_path)
-                    logger.info(f"  Receipt: {image_path}")
+                    logger.info(f"Added receipt: {image_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to add receipt, continuing without it: {e}")
+                    logger.warning(f"Failed to add receipt: {e}")
             
             # Create the expense
-            logger.info("Calling Splitwise API to create expense...")
             created_expense, errors = self.splitwise.createExpense(expense)
             
             if errors:
-                # Convert SplitwiseError to string for logging and JSON serialization
-                error_message = str(errors) if errors else "Unknown error"
-                error_details = repr(errors) if errors else "No details"
-                
-                logger.error(f"Errors creating expense: {error_message}")
-                logger.error(f"Error details: {error_details}")
-                
-                # Try to extract more details from the error object
-                try:
-                    if hasattr(errors, '__dict__'):
-                        logger.error(f"Error attributes: {errors.__dict__}")
-                except:
-                    pass
-                
+                logger.error(f"Errors creating expense: {errors}")
+                # Convert SplitwiseError objects to strings for JSON serialization
+                error_messages = [str(error) for error in errors] if isinstance(errors, list) else [str(errors)]
                 return {
                     'success': False,
-                    'error': error_message,
-                    'error_type': type(errors).__name__
+                    'error': '; '.join(error_messages),
+                    'errors': error_messages
                 }
             
             logger.info(f"Created expense ID: {created_expense.getId()}")
@@ -243,24 +239,9 @@ class SplitwiseAPIClient(SplitwiseBase):
             
         except Exception as e:
             logger.error(f"Error creating expense: {e}", exc_info=True)
-            
-            # Extract detailed error information
-            error_details = {
-                'message': str(e),
-                'type': type(e).__name__
-            }
-            
-            # Try to get more details if available
-            if hasattr(e, '__dict__'):
-                try:
-                    error_details['details'] = str(e.__dict__)
-                except:
-                    pass
-            
             return {
                 'success': False,
-                'error': str(e),
-                'error_details': error_details
+                'error': str(e)
             }
     
     def get_groups(self) -> List[Dict]:

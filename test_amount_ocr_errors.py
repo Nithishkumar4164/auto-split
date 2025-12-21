@@ -43,3 +43,4 @@ for text, expected_amount, description in test_texts:
         print(f"❌ FAIL: Got ₹{parsed_amount} instead of ₹{expected_amount}")
 
 print("\n" + "=" * 80)
+
