@@ -1,0 +1,34 @@
+# Virtual environments
+venv/
+.venv/
+env/
+bin/
+include/
+lib/
+build/
+dist/
+*.egg-info/
+
+# --- Python Basics ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Secrets & Configs (Crucial!) ---
+# Only keep the .example versions in Git
+.env
+*.env
+credentials.json
+token.json
+client_secrets.json
+
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+

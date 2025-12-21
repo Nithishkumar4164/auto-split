@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.local
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+tests/
+
+# Documentation
+*.md
+docs/
+
+# Application data
+processed_utrs.json
+aliases.json
+logs/
+*.log
+
+# Temporary files
+temp/
+tmp/
+.DS_Store
+
+# Cloud configuration (not needed in container)
+cloudbuild.yaml
+.gcloudignore
+
+# Service account keys (should be mounted at runtime)
+*.json
+!aliases.example.json
+

@@ -1,0 +1,32 @@
+"""Configuration module for AutoSplit application."""
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+class Config:
+    """Application configuration."""
+    
+    # Google Cloud Configuration
+    GOOGLE_CLOUD_PROJECT = os.getenv('GOOGLE_CLOUD_PROJECT', '')
+    GOOGLE_APPLICATION_CREDENTIALS = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '')
+    
+    # Google Drive Configuration
+    DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID', '')
+    SPLITWISE_ROOT_FOLDER = os.getenv('SPLITWISE_ROOT_FOLDER', 'Splitwise')
+    
+    # Application Configuration
+    PORT = int(os.getenv('PORT', 8080))
+    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+    
+    # File Paths
+    UTR_TRACKING_FILE = os.getenv('UTR_TRACKING_FILE', 'processed_utrs.json')
+    ALIASES_FILE = 'aliases.json'
+    
+    # OCR Configuration
+    TESSERACT_CMD = os.getenv('TESSERACT_CMD', '/usr/bin/tesseract')
+    
+    # Supported image formats
+    SUPPORTED_FORMATS = ['.jpg', '.jpeg', '.png']
+
