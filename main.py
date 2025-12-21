@@ -105,6 +105,7 @@ def process_image():
     """
     try:
         data = request.get_json()
+        logger.info(f"Received request data: {data}")
         
         if not data or 'image_path' not in data:
             return jsonify({
