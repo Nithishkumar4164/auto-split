@@ -165,10 +165,14 @@ class ExpenseProcessor:
             transaction: Transaction details
             
         Returns:
-            Expense description
+            Expense description (only the part before the first dash, if message contains a dash)
         """
         # Use message if available, otherwise use recipient
         if transaction.message:
+            # If message contains a dash, use only the part before it as the title
+            if '-' in transaction.message:
+                title = transaction.message.split('-', 1)[0].strip()
+                return title if title else transaction.message
             return transaction.message
         elif transaction.recipient:
             return f"Payment to {transaction.recipient}"
