@@ -22,7 +22,7 @@ class Config:
     
     # File Paths
     UTR_TRACKING_FILE = os.getenv('UTR_TRACKING_FILE', 'processed_utrs.json')
-    ALIASES_FILE = 'aliases.json'
+    ALIASES_FILE = os.getenv('ALIAS_FILE_PATH', './aliases.json')
     
     # OCR Configuration
     TESSERACT_CMD = os.getenv('TESSERACT_CMD', '/usr/bin/tesseract')
