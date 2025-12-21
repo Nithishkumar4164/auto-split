@@ -162,6 +162,16 @@ class TestExpenseProcessor:
         
         assert description == "Dilawar 7 spices me alex boops"
     
+    def test_build_expense_description_with_message_containing_dash(self, processor):
+        """Test building expense description from message with dash separator."""
+        transaction = TransactionDetails()
+        transaction.message = "Dilawar 7 spices- me alex boops"
+        transaction.amount = 460.0
+        
+        description = processor._build_expense_description(transaction)
+        
+        assert description == "Dilawar 7 spices"
+    
     def test_build_expense_description_with_recipient(self, processor):
         """Test building expense description from recipient."""
         transaction = TransactionDetails()
