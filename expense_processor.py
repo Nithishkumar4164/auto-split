@@ -1,5 +1,7 @@
 """Main expense processor that orchestrates the entire workflow."""
 import logging
+import os
+import requests
 from typing import Dict, Optional
 from pathlib import Path
 
@@ -10,6 +12,14 @@ from splitwise_client import SplitwiseClient
 from drive_handler import DriveHandler
 
 logger = logging.getLogger(__name__)
+
+# Try to import GCS client (optional dependency)
+try:
+    from google.cloud import storage
+    GCS_AVAILABLE = True
+except ImportError:
+    GCS_AVAILABLE = False
+    logger.warning("Google Cloud Storage client not available. GCS event processing will use mediaLink.")
 
 
 class ExpenseProcessor:
@@ -149,8 +159,6 @@ class ExpenseProcessor:
     def _build_expense_description(self, transaction: TransactionDetails) -> str:
         """Build expense description from transaction details.
         
-        Format: If message is "ExpenseTitle- participants", use just "ExpenseTitle"
-        
         Args:
             transaction: Transaction details
             
@@ -159,12 +167,6 @@ class ExpenseProcessor:
         """
         # Use message if available, otherwise use recipient
         if transaction.message:
-            # If message has dash separator (ExpenseTitle- participants), use only the title part
-            if '-' in transaction.message:
-                title = transaction.message.split('-', 1)[0].strip()
-                logger.debug(f"Extracted expense title: '{title}'")
-                return title
-            # Otherwise use full message
             return transaction.message
         elif transaction.recipient:
             return f"Payment to {transaction.recipient}"
@@ -172,16 +174,20 @@ class ExpenseProcessor:
             return f"Transaction - ₹{transaction.amount}"
     
     def process_drive_event(self, event_data: Dict) -> Dict:
-        """Process Google Drive upload event.
+        """Process Google Drive or GCS upload event.
         
         Args:
-            event_data: Event data from Cloud Run
+            event_data: Event data from Cloud Run (can be Drive or GCS event)
             
         Returns:
             Processing result dict
         """
         try:
-            # Process the drive event
+            # Check if this is a GCS event (has 'bucket' and 'kind' fields)
+            if event_data.get('kind') == 'storage#object' and event_data.get('bucket'):
+                return self._process_gcs_event(event_data)
+            
+            # Otherwise, treat as Drive event
             processed_event = self.drive_handler.process_drive_event(event_data)
             
             if not processed_event:
@@ -223,4 +229,164 @@ class ExpenseProcessor:
                 'success': False,
                 'error': str(e)
             }
+    
+    def _process_gcs_event(self, event_data: Dict) -> Dict:
+        """Process Google Cloud Storage upload event.
+        
+        Args:
+            event_data: GCS object event data
+            
+        Returns:
+            Processing result dict
+        """
+        try:
+            bucket_name = event_data.get('bucket')
+            file_name = event_data.get('name')
+            media_link = event_data.get('mediaLink')
+            
+            if not bucket_name or not file_name:
+                logger.warning("Missing bucket or name in GCS event")
+                return {
+                    'success': False,
+                    'error': 'Missing bucket or name in GCS event'
+                }
+            
+            logger.info(f"Processing GCS event: gs://{bucket_name}/{file_name}")
+            
+            # Check if it's an image file
+            if not self._is_image_file(file_name):
+                logger.info(f"Skipping non-image file: {file_name}")
+                return {
+                    'success': False,
+                    'error': f'Not an image file: {file_name}'
+                }
+            
+            # Parse path to get group name
+            # Expected format: "Test Group/TransactionReceipt...jpeg"
+            group_name = self._parse_gcs_path(file_name)
+            logger.info(f"Extracted group name: {group_name}")
+            
+            # Download file to temporary location
+            temp_dir = Path('/tmp/autosplit')
+            temp_dir.mkdir(exist_ok=True)
+            
+            local_file_name = Path(file_name).name
+            local_path = temp_dir / local_file_name
+            
+            # Download from GCS
+            if not self._download_from_gcs(bucket_name, file_name, str(local_path), media_link):
+                return {
+                    'success': False,
+                    'error': f'Failed to download file from GCS: gs://{bucket_name}/{file_name}'
+                }
+            
+            # Process the image
+            result = self.process_image(str(local_path), group_name)
+            
+            # Clean up temporary file
+            if local_path.exists():
+                local_path.unlink()
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error processing GCS event: {e}", exc_info=True)
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def _parse_gcs_path(self, file_path: str) -> Optional[str]:
+        """Parse GCS file path to extract group name.
+        
+        Expected format: "Test Group/TransactionReceipt...jpeg"
+        or: "TransactionReceipt...jpeg" (for non-group expenses)
+        
+        Args:
+            file_path: Full file path in GCS
+            
+        Returns:
+            Group name or None
+        """
+        parts = Path(file_path).parts
+        
+        # If only 1 part: filename only (no group)
+        if len(parts) == 1:
+            return None
+        
+        # If 2+ parts: GroupName/filename.jpeg
+        if len(parts) >= 2:
+            return parts[0]
+        
+        return None
+    
+    def _is_image_file(self, filename: str) -> bool:
+        """Check if file is an image.
+        
+        Args:
+            filename: File name
+            
+        Returns:
+            True if image file, False otherwise
+        """
+        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp']
+        ext = Path(filename).suffix.lower()
+        return ext in image_extensions
+    
+    def _download_from_gcs(self, bucket_name: str, blob_name: str, destination_path: str, media_link: Optional[str] = None) -> bool:
+        """Download file from Google Cloud Storage.
+        
+        Args:
+            bucket_name: GCS bucket name
+            blob_name: GCS blob (file) name
+            destination_path: Local path to save file
+            media_link: Optional mediaLink URL for direct download
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Try using mediaLink first (simpler, no auth needed if using service account)
+            if media_link:
+                try:
+                    logger.info(f"Downloading from mediaLink: {media_link}")
+                    response = requests.get(media_link, timeout=30)
+                    response.raise_for_status()
+                    
+                    # Create directories if needed
+                    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+                    
+                    with open(destination_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    logger.info(f"Downloaded from mediaLink to {destination_path}")
+                    return True
+                except Exception as e:
+                    logger.warning(f"Failed to download from mediaLink: {e}, trying GCS client")
+            
+            # Fallback to GCS client if available
+            if GCS_AVAILABLE:
+                try:
+                    storage_client = storage.Client()
+                    bucket = storage_client.bucket(bucket_name)
+                    blob = bucket.blob(blob_name)
+                    
+                    # Create directories if needed
+                    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+                    
+                    # Download the file
+                    blob.download_to_filename(destination_path)
+                    
+                    logger.info(f"Downloaded gs://{bucket_name}/{blob_name} to {destination_path}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Error downloading from GCS client: {e}", exc_info=True)
+                    return False
+            else:
+                logger.error("GCS client not available and mediaLink download failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error downloading from GCS: {e}", exc_info=True)
+            return False
 

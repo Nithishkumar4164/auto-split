@@ -54,13 +54,23 @@ def health_check():
 
 @app.route('/process-drive-event', methods=['POST'])
 def process_drive_event():
-    """Process Google Drive upload event.
+    """Process Google Drive or GCS upload event.
     
     Expected event format from Eventarc:
+    
+    GCS event:
+    {
+        "kind": "storage#object",
+        "bucket": "bucket-name",
+        "name": "Test Group/TransactionReceipt...jpeg",
+        "mediaLink": "https://storage.googleapis.com/...",
+        ...
+    }
+    
+    Drive event:
     {
         "id": "file-id",
         "name": "transaction.jpeg",
-        "bucket": "bucket-name",
         ...
     }
     """
@@ -75,7 +85,13 @@ def process_drive_event():
                 'error': 'No event data received'
             }), 400
         
-        logger.info(f"Received drive event: {event_data.get('name')}")
+        # Log the event type and key details
+        if event_data.get('kind') == 'storage#object':
+            logger.info(f"Received GCS event: gs://{event_data.get('bucket')}/{event_data.get('name')}")
+        else:
+            logger.info(f"Received Drive event: {event_data.get('name')}")
+        
+        logger.debug(f"Full event data: {event_data}")
         
         # Process the event
         result = processor.process_drive_event(event_data)
