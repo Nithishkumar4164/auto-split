@@ -83,12 +83,12 @@ class ExpenseProcessor:
             if transaction.utr and self.utr_tracker.is_processed(transaction.utr):
                 existing_info = self.utr_tracker.get_utr_info(transaction.utr)
                 logger.warning(f"UTR {transaction.utr} already processed")
-                return {
-                    'success': False,
-                    'error': 'Duplicate transaction - UTR already processed',
-                    'utr': transaction.utr,
-                    'existing_expense': existing_info
-                }
+                # return {
+                #     'success': False,
+                #     'error': 'Duplicate transaction - UTR already processed',
+                #     'utr': transaction.utr,
+                #     'existing_expense': existing_info
+                # }
             
             # Step 3: Get detected participants (don't match yet, let MCP do it)
             detected_participants = transaction.participants if transaction.participants else []
