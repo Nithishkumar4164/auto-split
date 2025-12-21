@@ -8,7 +8,7 @@ from config import Config
 from image_parser import ImageParser
 from alias_manager import AliasManager
 from utr_tracker import UTRTracker
-from splitwise_client import SplitwiseClient
+from splitwise_factory import create_splitwise_client, get_splitwise_mode
 from drive_handler import DriveHandler
 from expense_processor import ExpenseProcessor
 
@@ -26,8 +26,11 @@ app = Flask(__name__)
 image_parser = ImageParser(tesseract_cmd=Config.TESSERACT_CMD)
 alias_manager = AliasManager(aliases_file=Config.ALIASES_FILE)
 utr_tracker = UTRTracker(tracking_file=Config.UTR_TRACKING_FILE)
-splitwise_client = SplitwiseClient(mcp_handler=None)  # MCP handler will be injected
+splitwise_client = create_splitwise_client(mcp_handler=None)  # Creates API or MCP client based on config
 drive_handler = DriveHandler(credentials_path=Config.GOOGLE_APPLICATION_CREDENTIALS)
+
+# Log which Splitwise mode is being used
+logger.info(f"Using Splitwise mode: {get_splitwise_mode()}")
 
 # Initialize processor
 processor = ExpenseProcessor(

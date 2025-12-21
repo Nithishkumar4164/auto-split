@@ -240,7 +240,7 @@ DRIVE_FOLDER_ID=your-folder-id
 SPLITWISE_ROOT_FOLDER=Splitwise
 
 # Application
-PORT=8080
+PORT=8090
 LOG_LEVEL=INFO
 TESSERACT_CMD=/usr/bin/tesseract
 

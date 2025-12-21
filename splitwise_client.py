@@ -23,60 +23,51 @@ class SplitwiseClient:
         cost: float,
         participants: List[str],
         group_id: Optional[str] = None,
-        image_path: Optional[str] = None
+        image_path: Optional[str] = None,
+        all_aliases: Optional[Dict[str, List[str]]] = None
     ) -> Dict:
         """Create a Splitwise expense.
         
         Args:
             description: Expense description
             cost: Total cost of expense
-            participants: List of participant names
+            participants: List of participant names detected from transaction
             group_id: Splitwise group ID (optional)
             image_path: Path to image file to attach (optional)
+            all_aliases: Dictionary mapping canonical names to aliases (optional)
             
         Returns:
             Response from Splitwise API
         """
         try:
-            # Prepare expense data
-            expense_data = {
-                'description': description,
-                'cost': str(cost),
-                'users': participants
-            }
-            
-            if group_id:
-                expense_data['group_id'] = group_id
-            
-            # Build instructions for MCP
+            # Build instructions for MCP with alias context
             instructions = self._build_instructions(
-                description, cost, participants, group_id, image_path
+                description, cost, participants, group_id, image_path, all_aliases
             )
             
             logger.info(f"Creating Splitwise expense: {description} - ₹{cost}")
-            logger.debug(f"Expense data: {expense_data}")
+            logger.debug(f"Detected participants: {participants}")
             
-            # Call MCP tool (this would be done by the caller in practice)
-            # For now, we prepare the call parameters
+            # Prepare MCP call parameters
             mcp_params = {
                 'instructions': instructions,
-                'output_hint': 'return the expense ID, status, and any error messages'
+                'output_hint': 'return the expense ID, the users it was split with, and any status messages',
+                'description': description,
+                'cost': str(cost)
             }
             
-            # Add optional parameters
+            # Add optional group parameter
             if group_id:
                 mcp_params['group_id'] = group_id
             
-            mcp_params['description'] = description
-            mcp_params['cost'] = str(cost)
-            mcp_params['users'] = participants
-            
             logger.info(f"Prepared MCP call for expense creation")
+            logger.debug(f"Instructions: {instructions}")
             
             return {
                 'success': True,
                 'mcp_params': mcp_params,
-                'message': 'Expense creation request prepared'
+                'message': 'Expense creation request prepared',
+                'instructions': instructions
             }
             
         except Exception as e:
@@ -92,32 +83,49 @@ class SplitwiseClient:
         cost: float,
         participants: List[str],
         group_id: Optional[str] = None,
-        image_path: Optional[str] = None
+        image_path: Optional[str] = None,
+        all_aliases: Optional[Dict[str, List[str]]] = None
     ) -> str:
-        """Build instructions for MCP tool call.
+        """Build instructions for MCP tool call with alias context.
         
         Args:
             description: Expense description
             cost: Total cost
-            participants: List of participants
+            participants: List of participant names detected from transaction
             group_id: Group ID (optional)
             image_path: Image path (optional)
+            all_aliases: Dictionary mapping canonical names to their aliases
             
         Returns:
             Instructions string
         """
-        participants_str = ', '.join(participants)
+        instructions = f"Create a Splitwise expense with description '{description}' for ₹{cost}.\n\n"
         
-        instructions = f"Create a Splitwise expense with description '{description}' "
-        instructions += f"for ₹{cost} split equally among: {participants_str}. "
+        # Add detected participants context
+        if participants:
+            participants_str = ', '.join(participants)
+            instructions += f"Detected participants from transaction: {participants_str}\n\n"
+        
+        # Add alias mapping context to help AI match participants
+        if all_aliases:
+            instructions += "Here are all known users and their aliases:\n"
+            for canonical_name, aliases in all_aliases.items():
+                aliases_str = ', '.join(aliases) if aliases else 'no aliases'
+                instructions += f"  - {canonical_name} (also known as: {aliases_str})\n"
+            instructions += "\n"
+        
+        # Instructions for AI to figure out users
+        instructions += "Please:\n"
+        instructions += "1. Match the detected participant names to the actual Splitwise users using the alias information above\n"
+        instructions += "2. Split the expense equally among the matched users (including me as the payer)\n"
         
         if group_id:
-            instructions += f"Add this expense to group ID {group_id}. "
+            instructions += f"3. Add this expense to group ID {group_id}\n"
         else:
-            instructions += "Create this expense outside of any group. "
+            instructions += "3. Create this expense outside of any group\n"
         
         if image_path:
-            instructions += f"Attach the image from {image_path} to the expense. "
+            instructions += f"4. Attach the receipt image from {image_path}\n"
         
         return instructions
     
@@ -182,16 +190,18 @@ class SplitwiseClient:
         cost: float,
         participants: List[str],
         image_path: str,
-        group_id: Optional[str] = None
+        group_id: Optional[str] = None,
+        all_aliases: Optional[Dict[str, List[str]]] = None
     ) -> Dict:
         """Prepare expense creation with image attachment.
         
         Args:
             description: Expense description
             cost: Total cost
-            participants: List of participants
+            participants: List of participants detected from transaction
             image_path: Path to transaction image
             group_id: Group ID (optional)
+            all_aliases: Dictionary mapping canonical names to aliases (optional)
             
         Returns:
             Response dict
@@ -199,13 +209,14 @@ class SplitwiseClient:
         # First upload image
         image_url = self.upload_image(image_path)
         
-        # Then create expense
+        # Then create expense with alias context
         result = self.create_expense(
             description=description,
             cost=cost,
             participants=participants,
             group_id=group_id,
-            image_path=image_url
+            image_path=image_url,
+            all_aliases=all_aliases
         )
         
         return result

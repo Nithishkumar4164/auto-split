@@ -163,7 +163,7 @@ python main.py
 
 ### Manual Processing
 ```bash
-curl -X POST http://localhost:8080/process-image \
+curl -X POST http://localhost:8090/process-image \
   -H "Content-Type: application/json" \
   -d '{
     "image_path": "/path/to/transaction.jpeg",

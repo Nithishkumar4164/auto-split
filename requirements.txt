@@ -20,6 +20,9 @@ requests>=2.31.0
 fuzzywuzzy>=0.18.0
 python-Levenshtein>=0.25.0
 
+# Splitwise Integration
+splitwise>=3.0.0
+
 # Testing
 pytest>=8.0.0
 pytest-cov>=4.1.0

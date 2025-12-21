@@ -4,7 +4,7 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8080 \
+    PORT=8090 \
     DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies including Tesseract OCR
@@ -40,7 +40,7 @@ RUN mkdir -p /app/data && \
 ENV TESSERACT_CMD=/usr/bin/tesseract
 
 # Expose port
-EXPOSE 8080
+EXPOSE 8090
 
 # Run the application with gunicorn
 CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 main:app

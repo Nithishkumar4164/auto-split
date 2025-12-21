@@ -46,7 +46,7 @@ Edit `.env` with your settings:
 ```env
 GOOGLE_CLOUD_PROJECT=your-project-id
 LOG_LEVEL=INFO
-PORT=8080
+PORT=8090
 ```
 
 ### 4. Set Up Aliases
@@ -68,7 +68,7 @@ python main.py
 Test it:
 ```bash
 # In another terminal
-curl http://localhost:8080/health
+curl http://localhost:8090/health
 ```
 
 ### 6. Test with Sample Image

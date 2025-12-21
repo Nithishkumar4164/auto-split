@@ -62,7 +62,7 @@ class ExpenseProcessor:
                 return {
                     'success': False,
                     'error': 'Invalid transaction details - missing amount or UTR',
-                    'transaction': transaction
+                    'transaction': transaction.to_dict()
                 }
             
             logger.info(f"Parsed transaction: {transaction}")
@@ -78,33 +78,36 @@ class ExpenseProcessor:
                     'existing_expense': existing_info
                 }
             
-            # Step 3: Match participants to canonical names
-            if transaction.participants:
-                matched_participants = self.alias_manager.match_participants(
-                    transaction.participants
-                )
-                logger.info(f"Matched participants: {matched_participants}")
+            # Step 3: Get detected participants (don't match yet, let MCP do it)
+            detected_participants = transaction.participants if transaction.participants else []
+            
+            if detected_participants:
+                logger.info(f"Detected participants: {detected_participants}")
             else:
                 logger.warning("No participants found in transaction message")
-                matched_participants = []
             
-            # Step 4: Determine expense description
+            # Step 4: Get all aliases to provide context to MCP
+            all_aliases = self.alias_manager.aliases
+            logger.debug(f"Available aliases: {all_aliases}")
+            
+            # Step 5: Determine expense description
             description = self._build_expense_description(transaction)
             
-            # Step 5: Find group ID if group name provided
+            # Step 6: Find group ID if group name provided
             group_id = None
             if group_name:
                 group_id = self.splitwise_client.find_group_by_name(group_name)
                 if not group_id:
                     logger.warning(f"Group not found: {group_name}")
             
-            # Step 6: Create Splitwise expense
+            # Step 7: Create Splitwise expense (MCP will match participants using aliases)
             expense_result = self.splitwise_client.prepare_expense_with_image(
                 description=description,
                 cost=transaction.amount,
-                participants=matched_participants,
+                participants=detected_participants,
                 image_path=image_path,
-                group_id=group_id
+                group_id=group_id,
+                all_aliases=all_aliases
             )
             
             if not expense_result.get('success'):
@@ -114,25 +117,26 @@ class ExpenseProcessor:
                     'details': expense_result
                 }
             
-            # Step 7: Record UTR as processed
+            # Step 8: Record UTR as processed
             expense_id = expense_result.get('expense_id')
             self.utr_tracker.add_utr(
                 utr=transaction.utr,
                 amount=transaction.amount,
                 expense_id=expense_id,
                 group_name=group_name,
-                participants=matched_participants
+                participants=detected_participants
             )
             
             logger.info(f"Successfully created expense for UTR {transaction.utr}")
             
             return {
                 'success': True,
-                'transaction': transaction,
-                'matched_participants': matched_participants,
+                'transaction': transaction.to_dict(),
+                'detected_participants': detected_participants,
                 'group_name': group_name,
                 'expense_id': expense_id,
-                'description': description
+                'description': description,
+                'mcp_instructions': expense_result.get('instructions')
             }
             
         except Exception as e:
@@ -145,6 +149,8 @@ class ExpenseProcessor:
     def _build_expense_description(self, transaction: TransactionDetails) -> str:
         """Build expense description from transaction details.
         
+        Format: If message is "ExpenseTitle- participants", use just "ExpenseTitle"
+        
         Args:
             transaction: Transaction details
             
@@ -153,6 +159,12 @@ class ExpenseProcessor:
         """
         # Use message if available, otherwise use recipient
         if transaction.message:
+            # If message has dash separator (ExpenseTitle- participants), use only the title part
+            if '-' in transaction.message:
+                title = transaction.message.split('-', 1)[0].strip()
+                logger.debug(f"Extracted expense title: '{title}'")
+                return title
+            # Otherwise use full message
             return transaction.message
         elif transaction.recipient:
             return f"Payment to {transaction.recipient}"

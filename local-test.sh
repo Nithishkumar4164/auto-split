@@ -38,7 +38,7 @@ fi
 echo ""
 
 # Check if Flask app is running
-if ! curl -s http://localhost:8080/health > /dev/null 2>&1; then
+if ! curl -s http://localhost:8090/health > /dev/null 2>&1; then
     echo -e "${RED}Error: AutoSplit service is not running${NC}"
     echo "Start the service first with: python main.py"
     exit 1
@@ -66,7 +66,7 @@ fi
 echo -e "${GREEN}Processing image...${NC}"
 echo ""
 
-RESPONSE=$(curl -s -X POST http://localhost:8080/process-image \
+RESPONSE=$(curl -s -X POST http://localhost:8090/process-image \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD")
 

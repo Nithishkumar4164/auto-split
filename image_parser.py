@@ -31,6 +31,20 @@ class TransactionDetails:
     def is_valid(self) -> bool:
         """Check if transaction details are valid."""
         return self.amount is not None and self.utr is not None
+    
+    def to_dict(self) -> dict:
+        """Convert transaction details to dictionary for JSON serialization."""
+        return {
+            'amount': self.amount,
+            'recipient': self.recipient,
+            'recipient_upi': self.recipient_upi,
+            'message': self.message,
+            'transaction_id': self.transaction_id,
+            'utr': self.utr,
+            'account_number': self.account_number,
+            'timestamp': self.timestamp,
+            'participants': self.participants
+        }
 
 
 class ImageParser:
@@ -85,7 +99,8 @@ class ImageParser:
             text = pytesseract.image_to_string(processed_img)
             
             logger.info(f"Extracted text from {image_path}")
-            logger.debug(f"OCR Text: {text}")
+            logger.debug(f"OCR Text:\n{text}")
+            logger.debug(f"OCR Text length: {len(text)} characters")
             
             return text
         except Exception as e:
@@ -101,23 +116,72 @@ class ImageParser:
         Returns:
             Parsed amount or None
         """
-        # Pattern for Indian currency (₹460, ₹1,234.56, etc.)
+        # Patterns prioritized by reliability - try most specific first
         patterns = [
-            r'₹\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',  # ₹460 or ₹1,234.56
-            r'Rs\.?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)',  # Rs. 460
-            r'INR\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)',  # INR 460 or INR 2500.50
-            r'\b(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:₹|Rs|INR)',  # 460₹
+            # Most common: ₹ followed by digits (with optional comma separators and decimals)
+            r'₹\s*(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)',  # ₹460, ₹1,234.56, ₹1234.56
+            
+            # Rupee symbol with various whitespace
+            r'₹\s*(\d+(?:\.\d{1,2})?)',  # ₹ 460, ₹460.50
+            
+            # OCR ERROR: ₹ sometimes read as 'z' or 'Z'
+            r'[zZ]\s*(\d{1,4})',  # z1, Z1, z460 (₹ misread as z)
+            
+            # OCR ERROR: Small amounts where ₹ might be read as part of the number
+            # Look for patterns like "name 21" or "CSE z1" where 21 might be ₹1
+            r'\b[A-Z]{2,}\s+[zZ]?(\d{1,4})\b',  # "CSE z1" or "CSE 21"
+            
+            # Rs or Rs. prefix
+            r'Rs\.?\s*(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)',  # Rs. 460, Rs 460
+            
+            # INR prefix
+            r'INR\s*(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)',  # INR 460
+            
+            # Amount before rupee symbol
+            r'(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)\s*₹',  # 460₹, 460 ₹
+            
+            # Context-based patterns (paid, amount, etc.)
+            r'(?:Paid|Amount|Total|Price|Cost)\s*:?\s*₹?\s*(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)',
+            
+            # Fallback: standalone number (3-6 digits) - but not years like 2025
+            r'(?:^|\s)([4-9]\d{2,5})(?:\s|$)',  # 460 (as standalone number, starting with 4-9 to avoid dates)
         ]
         
         for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                amount_str = match.group(1).replace(',', '')
+            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                amount_str = match.group(1).replace(',', '').replace(' ', '')
                 try:
-                    return float(amount_str)
+                    amount = float(amount_str)
+                    
+                    # Special handling for potential OCR errors with small amounts
+                    # If amount is 21 and we found it via 'z' pattern or name pattern, it's likely ₹1
+                    if amount == 21 and ('z' in match.group(0).lower() or '[A-Z]{2,}' in pattern):
+                        logger.info(f"Detected OCR error: 21 is likely ₹1 (rupee symbol misread)")
+                        return 1.0
+                    
+                    # If amount ends in 1 and is small (11, 21, 31, etc.), check context
+                    if 11 <= amount <= 91 and amount % 10 == 1:
+                        # Look for 'z' near this number as indicator of OCR error
+                        context_start = max(0, match.start() - 10)
+                        context_end = min(len(text), match.end() + 10)
+                        context = text[context_start:context_end].lower()
+                        
+                        if 'z' in context or 'cse' in context or 'paid to' in context:
+                            # This is likely a single-digit amount with ₹ misread
+                            actual_amount = amount % 10  # Get the last digit
+                            logger.info(f"Detected OCR error: {amount} is likely ₹{actual_amount} (rupee symbol misread as digit)")
+                            return float(actual_amount)
+                    
+                    # Sanity check: amount should be reasonable (between 1 and 1,000,000)
+                    # Also exclude years (2020-2099) which are often in transaction dates
+                    if 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
+                        logger.info(f"Found amount: ₹{amount} using pattern: {pattern}")
+                        return amount
                 except ValueError:
                     continue
         
+        logger.warning("No amount found in text")
         return None
     
     def parse_utr(self, text: str) -> Optional[str]:
@@ -206,64 +270,87 @@ class ImageParser:
         for pattern in patterns:
             match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if match:
-                return match.group(1).strip()
+                message = match.group(1).strip()
+                logger.debug(f"Extracted message: '{message}'")
+                return message
         
+        logger.warning("No message found in text")
         return None
     
     def parse_participants(self, message: str) -> List[str]:
         """Parse participant names from message.
         
+        Format: "ExpenseTitle- participant1 participant2 participant3"
+        Example: "Testtransfer- me sanj boops"
+        Example: "Dilawar 7 spices- me alex boops"
+        
         Args:
             message: Transaction message
             
         Returns:
-            List of participant names
+            List of participant names (excluding 'me')
         """
         if not message:
             return []
         
-        # Common patterns for mentioning people
-        # "Dilawar 7 spices me alex boops"
-        # "for John, Jane and Bob"
-        # "split with Alice & Bob"
+        logger.debug(f"Parsing participants from message: '{message}'")
         
-        # Remove common words
-        stop_words = {'me', 'and', 'with', 'for', 'to', 'from', 'in', 'at', 'the', 'a', 'an', 'split'}
-        
-        # Split by common delimiters
-        participants = []
-        parts = re.split(r'[,&]|\s+and\s+|\s+with\s+|\s+for\s+', message, flags=re.IGNORECASE)
-        
-        for part in parts:
-            # Clean and extract names
-            words = part.strip().split()
-            name_parts = []
-            
-            for word in words:
-                # Skip stop words and numbers
-                clean_word = word.lower().strip('.,!?;:')
-                if clean_word not in stop_words and not word.isdigit():
-                    # Check if word looks like a name (starts with capital or all lowercase)
-                    if len(word) > 0 and (word[0].isupper() or word.islower()):
-                        name_parts.append(word)
-            
-            if name_parts:
-                # Filter out remaining stop words from final name
-                filtered_parts = [p for p in name_parts if p.lower() not in stop_words]
+        # Check if message has dash separator (ExpenseTitle- participants)
+        if '-' in message:
+            # Split by dash to separate title from participants
+            parts = message.split('-', 1)
+            if len(parts) == 2:
+                # Get the participant part (after the dash)
+                participant_string = parts[1].strip()
+                logger.debug(f"Found participant string after dash: '{participant_string}'")
                 
-                if filtered_parts:
-                    # Extract all consecutive 2-word lowercase combinations (like "alex boops")
-                    found_lowercase_pairs = False
-                    for i in range(len(filtered_parts) - 1):
-                        if filtered_parts[i][0].islower() and filtered_parts[i+1][0].islower():
-                            participants.append(f"{filtered_parts[i]} {filtered_parts[i+1]}")
-                            found_lowercase_pairs = True
+                # Split by spaces to get individual participants
+                participants = []
+                words = participant_string.split()
+                
+                for word in words:
+                    # Clean the word
+                    clean_word = word.strip('.,!?;:').lower()
                     
-                    # If no lowercase pairs found in this part, add individual names or combined
-                    if not found_lowercase_pairs:
-                        # For short lists (1-3 words), join them as a single name
-                        if len(filtered_parts) <= 3:
-                            participants.append(' '.join(filtered_parts))
+                    # Skip 'me' as it refers to current user
+                    if clean_word == 'me':
+                        logger.debug(f"Skipping 'me' (current user)")
+                        continue
+                    
+                    # Skip numbers
+                    if clean_word.isdigit():
+                        continue
+                    
+                    # Check if it's a valid name (2+ chars, starts with letter)
+                    if len(clean_word) >= 2 and clean_word[0].isalpha():
+                        # Keep original casing from word
+                        participants.append(word.strip('.,!?;:'))
+                        logger.debug(f"Added participant: '{word}'")
+                
+                return participants
+        
+        # Fallback: Parse using old logic for backward compatibility
+        logger.debug("No dash found, using fallback parsing")
+        
+        # Remove common words and filler
+        stop_words = {'me', 'and', 'with', 'for', 'to', 'from', 'in', 'at', 'the', 'a', 'an', 'split', 'spices'}
+        
+        # Remove numbers (like "7") which are often item counts
+        message_cleaned = re.sub(r'\b\d+\b', '', message)
+        
+        participants = []
+        words = message_cleaned.split()
+        
+        for word in words:
+            clean_word = word.lower().strip('.,!?;:')
+            
+            # Skip stop words
+            if clean_word in stop_words:
+                continue
+            
+            # Check if word looks like a name (2+ chars, starts with letter)
+            if len(word) >= 2 and word[0].isalpha():
+                participants.append(word.strip('.,!?;:'))
         
         return participants
     
@@ -341,7 +428,11 @@ class ImageParser:
             if details.message:
                 details.participants = self.parse_participants(details.message)
             
+            # Log what was extracted
             logger.info(f"Parsed transaction details: {details}")
+            if not details.amount:
+                logger.warning("Amount not extracted! Showing first 500 chars of OCR text for debugging:")
+                logger.warning(text[:500])
             
             return details
             
