@@ -120,14 +120,15 @@ class SplitwiseMCPClient(SplitwiseBase):
         instructions += "Please:\n"
         instructions += "1. Match the detected participant names to the actual Splitwise users using the alias information above\n"
         instructions += "2. Split the expense equally among the matched users (including me as the payer)\n"
+        instructions += "3. IMPORTANT: Set the currency code to 'INR' (Indian Rupees) - do NOT use USD or any other currency\n"
         
         if group_id:
-            instructions += f"3. Add this expense to group ID {group_id}\n"
+            instructions += f"4. Add this expense to group ID {group_id}\n"
         else:
-            instructions += "3. Create this expense outside of any group\n"
+            instructions += "4. Create this expense outside of any group\n"
         
         if image_path:
-            instructions += f"4. Attach the receipt image from {image_path}\n"
+            instructions += f"5. Attach the receipt image from {image_path}\n"
         
         return instructions
     

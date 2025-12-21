@@ -162,6 +162,7 @@ class SplitwiseAPIClient(SplitwiseBase):
             expense = Expense()
             expense.setCost(str(cost))
             expense.setDescription(description)
+            expense.setCurrencyCode('INR')  # Set currency to Indian Rupees by default
             
             if group_id:
                 expense.setGroupId(int(group_id))
