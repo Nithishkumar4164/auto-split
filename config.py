@@ -35,4 +35,7 @@ class Config:
     SPLITWISE_CONSUMER_KEY = os.getenv('SPLITWISE_CONSUMER_KEY', '')
     SPLITWISE_CONSUMER_SECRET = os.getenv('SPLITWISE_CONSUMER_SECRET', '')
     SPLITWISE_API_KEY = os.getenv('SPLITWISE_API_KEY', '')
+    
+    # Duplicate UTR Handling
+    REJECT_DUPLICATE_UTR = os.getenv('REJECT_DUPLICATE_UTR', 'true').lower() in ('true', '1', 'yes')
 
