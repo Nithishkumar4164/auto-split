@@ -74,16 +74,20 @@ class ImageParser:
         # Read image
         img = cv2.imread(image_path)
         
+        if img is None:
+            raise ValueError(f"Could not read image from {image_path}")
+        
+        # Resize (Upscale 2x) - improves OCR accuracy for small text
+        img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+        
         # Convert to grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Apply thresholding
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Thresholding (Binarization) to remove colored backgrounds
+        # Using fixed threshold (150) instead of OTSU for more consistent results
+        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
         
-        # Denoise
-        denoised = cv2.fastNlMeansDenoising(thresh, None, 10, 7, 21)
-        
-        return denoised
+        return thresh
     
     def extract_text(self, image_path: str) -> str:
         """Extract text from image using OCR.
@@ -98,8 +102,36 @@ class ImageParser:
             # Preprocess image
             processed_img = self.preprocess_image(image_path)
             
-            # Perform OCR
-            text = pytesseract.image_to_string(processed_img)
+            # Run Tesseract with Layout Analysis (PSM 6 = assume a block of text)
+            # This improves accuracy for receipt/screenshot images
+            custom_config = r'--psm 6'
+            
+            # Use image_to_data to get confidence scores and filter low-confidence words
+            data = pytesseract.image_to_data(processed_img, config=custom_config, output_type=pytesseract.Output.DICT)
+            
+            # Filter out low confidence words and empty text
+            # Reconstruct text preserving line structure
+            n_boxes = len(data['text'])
+            lines_dict = {}  # Use dict to group by line_num
+            
+            for i in range(n_boxes):
+                word = data['text'][i]
+                conf = int(data['conf'][i]) if data['conf'][i] else 0
+                line_num = int(data['line_num'][i]) if data['line_num'][i] else 0
+                
+                # Filter out empty text and low confidence words
+                if word.strip() and conf > 30:
+                    # Group words by line number
+                    if line_num not in lines_dict:
+                        lines_dict[line_num] = []
+                    lines_dict[line_num].append(word)
+            
+            # Convert to list of lines, sorted by line number
+            sorted_lines = sorted(lines_dict.items())
+            lines = [" ".join(words) for _, words in sorted_lines]
+            
+            # Join lines with newlines to preserve structure
+            text = "\n".join(lines)
             
             logger.info(f"Extracted text from {image_path}")
             logger.debug(f"OCR Text:\n{text}")
@@ -120,69 +152,185 @@ class ImageParser:
             Parsed amount or None
         """
         # Patterns prioritized by reliability - try most specific first
-        patterns = [
-            # Most common: ₹ followed by digits (with optional comma separators and decimals)
-            r'₹\s*(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)',  # ₹460, ₹1,234.56, ₹1234.56
-            
-            # Rupee symbol with various whitespace
-            r'₹\s*(\d+(?:\.\d{1,2})?)',  # ₹ 460, ₹460.50
-            
-            # OCR ERROR: ₹ sometimes read as 'z' or 'Z'
-            r'[zZ]\s*(\d{1,4})',  # z1, Z1, z460 (₹ misread as z)
-            
-            # OCR ERROR: Small amounts where ₹ might be read as part of the number
-            # Look for patterns like "name 21" or "CSE z1" where 21 might be ₹1
-            r'\b[A-Z]{2,}\s+[zZ]?(\d{1,4})\b',  # "CSE z1" or "CSE 21"
-            
-            # Rs or Rs. prefix
-            r'Rs\.?\s*(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)',  # Rs. 460, Rs 460
-            
-            # INR prefix
-            r'INR\s*(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)',  # INR 460
+        # IMPORTANT: Patterns with ₹ symbol should always take precedence
+        patterns_with_rupee = [
+            # Most common: ₹ or Rs followed by digits (with optional comma separators and decimals)
+            # This should match ₹130, ₹460, ₹1,234.56, Rs. 460
+            r'(?:₹|Rs\.?)\s*([0-9,]+\.?[0-9]*)',
             
             # Amount before rupee symbol
-            r'(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)\s*₹',  # 460₹, 460 ₹
-            
-            # Context-based patterns (paid, amount, etc.)
-            r'(?:Paid|Amount|Total|Price|Cost)\s*:?\s*₹?\s*(\d{1,3}(?:,?\d{3})*(?:\.\d{1,2})?)',
-            
-            # Fallback: standalone number (3-6 digits) - but not years like 2025
-            r'(?:^|\s)([4-9]\d{2,5})(?:\s|$)',  # 460 (as standalone number, starting with 4-9 to avoid dates)
+            r'([0-9,]+\.?[0-9]*)\s*₹',  # 460₹, 460 ₹
         ]
         
-        for pattern in patterns:
+        # Context-based patterns (these often have ₹ nearby)
+        context_patterns = [
+            # Context-based patterns (paid, amount, etc.) - prioritize these
+            r'(?:Paid|Amount|Total|Price|Cost|Debited)\s*:?\s*[₹zZ]?\s*([0-9,]+\.?[0-9]*)',
+            # OCR ERROR: ₹ read as "2" in payment contexts (e.g., "Paid to: 2130" -> ₹130)
+            r'(?:Paid|Amount|Total|Price|Cost|Debited)\s*:?\s*2([1-9]\d{0,3})(?:\s|$|[^\d])',  # "Paid to: 2130" -> 130
+        ]
+        
+        # OCR error patterns (only use when no ₹ symbol found)
+        ocr_error_patterns = [
+            # OCR ERROR: ₹ sometimes read as 'z' or 'Z' followed by digits
+            r'[zZ]\s*([0-9,]+\.?[0-9]*)',  # z1, Z1, z460 (₹ misread as z)
+        ]
+        
+        # Other patterns
+        other_patterns = [
+            # INR prefix
+            r'INR\s*([0-9,]+\.?[0-9]*)',  # INR 460
+            
+            # Fallback: standalone number (3-6 digits) - but not years like 2025
+            # Only match numbers starting with 1-9 (including 130) to avoid dates and small OCR errors
+            r'(?:^|\s)([1-9]\d{2,5})(?:\s|$)',  # 130, 460 (as standalone number)
+        ]
+        
+        # Track all valid amounts found with their context
+        valid_amounts = []
+        
+        # First, collect all amounts with ₹ symbol (highest priority)
+        for pattern in patterns_with_rupee:
             matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
             for match in matches:
                 amount_str = match.group(1).replace(',', '').replace(' ', '')
                 try:
                     amount = float(amount_str)
-                    
-                    # Special handling for potential OCR errors with small amounts
-                    # If amount is 21 and we found it via 'z' pattern or name pattern, it's likely ₹1
-                    if amount == 21 and ('z' in match.group(0).lower() or '[A-Z]{2,}' in pattern):
-                        logger.info(f"Detected OCR error: 21 is likely ₹1 (rupee symbol misread)")
-                        return 1.0
-                    
-                    # If amount ends in 1 and is small (11, 21, 31, etc.), check context
-                    if 11 <= amount <= 91 and amount % 10 == 1:
-                        # Look for 'z' near this number as indicator of OCR error
-                        context_start = max(0, match.start() - 10)
-                        context_end = min(len(text), match.end() + 10)
+                    if 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
+                        context_start = max(0, match.start() - 30)
+                        context_end = min(len(text), match.end() + 30)
                         context = text[context_start:context_end].lower()
                         
-                        if 'z' in context or 'cse' in context or 'paid to' in context:
-                            # This is likely a single-digit amount with ₹ misread
-                            actual_amount = amount % 10  # Get the last digit
-                            logger.info(f"Detected OCR error: {amount} is likely ₹{actual_amount} (rupee symbol misread as digit)")
-                            return float(actual_amount)
-                    
-                    # Sanity check: amount should be reasonable (between 1 and 1,000,000)
-                    # Also exclude years (2020-2099) which are often in transaction dates
-                    if 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
-                        logger.info(f"Found amount: ₹{amount} using pattern: {pattern}")
-                        return amount
+                        priority = 'high'  # Always high priority for ₹ amounts
+                        if 'paid to' in context or 'debited from' in context:
+                            priority = 'highest'  # Highest priority for amounts in transaction sections
+                        
+                        valid_amounts.append((amount, match.start(), priority))
+                        logger.debug(f"Found ₹ amount: ₹{amount} using pattern: {pattern} (priority: {priority})")
                 except ValueError:
                     continue
+        
+        # If we found amounts with ₹ symbol, skip OCR error patterns to avoid false positives
+        has_rupee_amounts = any(p == 'high' or p == 'highest' for _, _, p in valid_amounts)
+        
+        # Collect context-based patterns
+        for pattern in context_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                amount_str = match.group(1).replace(',', '').replace(' ', '')
+                try:
+                    amount = float(amount_str)
+                    if 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
+                        context_start = max(0, match.start() - 30)
+                        context_end = min(len(text), match.end() + 30)
+                        context = text[context_start:context_end].lower()
+                        
+                        priority = 'normal'
+                        if 'paid to' in context or 'debited from' in context:
+                            priority = 'high'
+                        
+                        valid_amounts.append((amount, match.start(), priority))
+                        logger.debug(f"Found context amount: ₹{amount} using pattern: {pattern} (priority: {priority})")
+                except ValueError:
+                    continue
+        
+        # Only use OCR error patterns if no ₹ amounts found (to avoid false positives)
+        if not has_rupee_amounts:
+            for pattern in ocr_error_patterns:
+                matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
+                for match in matches:
+                    amount_str = match.group(1).replace(',', '').replace(' ', '')
+                    try:
+                        amount = float(amount_str)
+                        match_text = match.group(0).lower()
+                        
+                        # Only apply OCR correction for very small amounts (1-9) when 'z' is present
+                        if 1 <= amount <= 9 and 'z' in match_text:
+                            logger.info(f"Detected OCR error: {amount} via z pattern")
+                            valid_amounts.append((amount, match.start(), 'ocr_corrected'))
+                        elif 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
+                            valid_amounts.append((amount, match.start(), 'normal'))
+                            logger.debug(f"Found OCR amount: ₹{amount} using pattern: {pattern}")
+                    except ValueError:
+                        continue
+        
+        # Collect other patterns
+        for pattern in other_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                amount_str = match.group(1).replace(',', '').replace(' ', '')
+                try:
+                    amount = float(amount_str)
+                    if 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
+                        valid_amounts.append((amount, match.start(), 'normal'))
+                        logger.debug(f"Found other amount: ₹{amount} using pattern: {pattern}")
+                except ValueError:
+                    continue
+        
+        # OCR Error Correction: ₹ sometimes read as "2"
+        # Check if any amount starts with "2" and is in a payment context
+        # Examples: "2130" -> ₹130, "213" -> ₹13, "21" -> ₹1
+        corrected_amounts = []
+        for amount, pos, priority in valid_amounts:
+            # Convert to integer string to check for leading "2"
+            if amount.is_integer():
+                amount_int = int(amount)
+                amount_str = str(amount_int)
+            else:
+                # For floats, check the integer part
+                amount_str = str(int(amount))
+            
+            # Check if amount starts with "2" and has 2-5 digits (20-29999 range)
+            # This catches cases like 2130, 213, 21 where ₹ was misread as "2"
+            if amount_str.startswith('2') and len(amount_str) >= 2 and 20 <= amount <= 29999:
+                # Skip if it's a year (2020-2099)
+                if 2020 <= amount <= 2099:
+                    corrected_amounts.append((amount, pos, priority))
+                    continue
+                
+                # Try removing the leading "2"
+                corrected_str = amount_str[1:]  # Remove first character "2"
+                try:
+                    corrected_amount = float(corrected_str)
+                    
+                    # Only correct if:
+                    # 1. Corrected amount is reasonable (1-1000000)
+                    # 2. Corrected amount doesn't start with 0 (avoid "20" -> "0")
+                    # 3. It's in a payment context
+                    if 1 <= corrected_amount <= 1000000 and not corrected_str.startswith('0'):
+                        # Check if it's in a payment context
+                        context_start = max(0, pos - 50)
+                        context_end = min(len(text), pos + 50)
+                        context = text[context_start:context_end].lower()
+                        
+                        # If in payment context, this is likely an OCR error (₹ misread as "2")
+                        if ('paid to' in context or 'debited from' in context or 
+                            'amount' in context or 'total' in context or
+                            'paid' in context or 'debited' in context or
+                            'transfer' in context):
+                            logger.info(f"Detected OCR error: {amount} is likely ₹{corrected_amount} (₹ misread as '2')")
+                            # Use high priority if in payment context, otherwise keep original priority
+                            new_priority = 'high' if ('paid to' in context or 'debited from' in context) else priority
+                            corrected_amounts.append((corrected_amount, pos, new_priority))
+                            continue
+                except (ValueError, IndexError):
+                    pass
+            
+            # Keep original amount if no correction applied
+            corrected_amounts.append((amount, pos, priority))
+        
+        # Use corrected amounts if any corrections were made
+        if corrected_amounts:
+            valid_amounts = corrected_amounts
+        
+        # Return the best valid amount
+        if valid_amounts:
+            # Sort by priority (highest > high > normal > ocr_corrected), then by position
+            priority_order = {'highest': 0, 'high': 1, 'normal': 2, 'ocr_corrected': 3}
+            valid_amounts.sort(key=lambda x: (priority_order.get(x[2], 2), x[1]))
+            amount = valid_amounts[0][0]
+            logger.info(f"Found amount: ₹{amount} (from {len(valid_amounts)} potential matches, priority: {valid_amounts[0][2]})")
+            return amount
         
         logger.warning("No amount found in text")
         return None
@@ -263,19 +411,49 @@ class ImageParser:
         Returns:
             Message or None
         """
-        # Pattern for message section
+        # Pattern for message section - handle both newline and colon separators
+        # Try to capture everything until the next section (Transaction ID, Debited from, etc.)
         patterns = [
-            r'Message\s*\n\s*(.+?)(?:\n|$)',
-            r'Comment\s*[:\n]\s*(.+?)(?:\n|$)',
-            r'Description\s*[:\n]\s*(.+?)(?:\n|$)',
+            # Most specific: Message label followed by content until next section
+            r'Message\s*[:\n]\s*(.+?)(?=\n(?:Transaction\s+ID|Debited\s+from|UTR|Account|Powered|$))',
+            r'Comment\s*[:\n]\s*(.+?)(?=\n(?:Transaction\s+ID|Debited\s+from|UTR|Account|Powered|$))',
+            r'Description\s*[:\n]\s*(.+?)(?=\n(?:Transaction\s+ID|Debited\s+from|UTR|Account|Powered|$))',
+            
+            # Simpler patterns for cases where next section might not be detected
+            r'Message\s*[:\n]\s*(.+?)(?:\n\n|\n[A-Z][A-Z\s]+:|$)',
+            r'Message\s+(.+?)(?:\n|$)',  # Message followed by space
+            
+            # Fallback: look for text after common keywords
+            r'(?:Message|Comment|Description)\s*[:\s]+\s*(.+?)(?:\n\n|\n[A-Z]|$)',
         ]
         
         for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
             if match:
                 message = match.group(1).strip()
-                logger.debug(f"Extracted message: '{message}'")
-                return message
+                # Clean up message - remove extra whitespace and newlines, but preserve single spaces
+                message = re.sub(r'\s+', ' ', message)
+                # Remove leading/trailing whitespace
+                message = message.strip()
+                if message and len(message) > 1:
+                    logger.debug(f"Extracted message: '{message}'")
+                    return message
+        
+        # Fallback: Try to find text that looks like a message (contains lowercase letters and spaces)
+        # This handles cases where "Message" label might be misread by OCR
+        lines = text.split('\n')
+        for i, line in enumerate(lines):
+            line_lower = line.lower().strip()
+            # Look for "Message" keyword
+            if ('message' in line_lower or 'comment' in line_lower) and i + 1 < len(lines):
+                # Return the next line as potential message
+                next_line = lines[i + 1].strip()
+                # Make sure it looks like a message (has lowercase letters, not all caps)
+                if next_line and len(next_line) > 2 and not next_line.isupper():
+                    # Clean up
+                    next_line = re.sub(r'\s+', ' ', next_line).strip()
+                    logger.debug(f"Extracted message (fallback): '{next_line}'")
+                    return next_line
         
         logger.warning("No message found in text")
         return None
@@ -294,25 +472,39 @@ class ImageParser:
             List of participant names (excluding 'me')
         """
         if not message:
+            logger.debug("No message provided for participant parsing")
             return []
         
         logger.debug(f"Parsing participants from message: '{message}'")
         
+        # Normalize message - handle OCR errors in dash (might be read as -, --, or space)
+        # Replace multiple dashes or spaces with single dash
+        message_normalized = re.sub(r'[-—–]+', '-', message)
+        message_normalized = re.sub(r'\s+', ' ', message_normalized)
+        
         # Check if message has dash separator (ExpenseTitle- participants)
-        if '-' in message:
+        if '-' in message_normalized:
             # Split by dash to separate title from participants
-            parts = message.split('-', 1)
+            parts = message_normalized.split('-', 1)
             if len(parts) == 2:
                 # Get the participant part (after the dash)
                 participant_string = parts[1].strip()
                 logger.debug(f"Found participant string after dash: '{participant_string}'")
                 
-                # Split by spaces to get individual participants
+                # Split by spaces, commas, or other separators to get individual participants
+                # Handle both space-separated and comma-separated formats
+                if ',' in participant_string:
+                    words = [w.strip() for w in participant_string.split(',')]
+                else:
+                    words = participant_string.split()
+                
                 participants = []
-                words = participant_string.split()
                 
                 for word in words:
-                    # Clean the word
+                    if not word:
+                        continue
+                    
+                    # Clean the word - remove punctuation but preserve the word
                     clean_word = word.strip('.,!?;:').lower()
                     
                     # Skip 'me' as it refers to current user
@@ -320,17 +512,30 @@ class ImageParser:
                         logger.debug(f"Skipping 'me' (current user)")
                         continue
                     
-                    # Skip numbers
+                    # Skip numbers (standalone digits)
                     if clean_word.isdigit():
                         continue
                     
+                    # Skip common stop words
+                    stop_words = {'and', 'with', 'for', 'to', 'from', 'in', 'at', 'the', 'a', 'an', 'split'}
+                    if clean_word in stop_words:
+                        continue
+                    
                     # Check if it's a valid name (2+ chars, starts with letter)
-                    if len(clean_word) >= 2 and clean_word[0].isalpha():
-                        # Keep original casing from word
-                        participants.append(word.strip('.,!?;:'))
-                        logger.debug(f"Added participant: '{word}'")
+                    # Also allow names that might have OCR errors (mixed case)
+                    if len(clean_word) >= 2:
+                        # Must start with a letter (not a digit or special char)
+                        if clean_word[0].isalpha():
+                            # Keep original casing from word (but clean punctuation)
+                            clean_participant = word.strip('.,!?;:')
+                            participants.append(clean_participant)
+                            logger.debug(f"Added participant: '{clean_participant}'")
+                        else:
+                            logger.debug(f"Skipping '{word}' (doesn't start with letter)")
                 
-                return participants
+                if participants:
+                    logger.info(f"Parsed {len(participants)} participants: {participants}")
+                    return participants
         
         # Fallback: Parse using old logic for backward compatibility
         logger.debug("No dash found, using fallback parsing")
@@ -354,6 +559,9 @@ class ImageParser:
             # Check if word looks like a name (2+ chars, starts with letter)
             if len(word) >= 2 and word[0].isalpha():
                 participants.append(word.strip('.,!?;:'))
+        
+        if participants:
+            logger.info(f"Parsed {len(participants)} participants (fallback): {participants}")
         
         return participants
     
