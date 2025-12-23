@@ -14,7 +14,8 @@ class SplitwiseBase(ABC):
         participants: List[str],
         group_id: Optional[str] = None,
         image_path: Optional[str] = None,
-        all_aliases: Optional[Dict[str, List[str]]] = None
+        all_aliases: Optional[Dict[str, List[str]]] = None,
+        date: Optional[str] = None
     ) -> Dict:
         """Create a Splitwise expense.
         
@@ -25,6 +26,7 @@ class SplitwiseBase(ABC):
             group_id: Splitwise group ID (optional)
             image_path: Path to image file to attach (optional)
             all_aliases: Dictionary mapping canonical names to aliases (optional)
+            date: ISO 8601 formatted date string (optional, e.g., "2025-12-21T19:12:00Z")
             
         Returns:
             Response dict with success status and expense details
@@ -60,7 +62,8 @@ class SplitwiseBase(ABC):
         participants: List[str],
         image_path: str,
         group_id: Optional[str] = None,
-        all_aliases: Optional[Dict[str, List[str]]] = None
+        all_aliases: Optional[Dict[str, List[str]]] = None,
+        date: Optional[str] = None
     ) -> Dict:
         """Prepare expense creation with image attachment.
         
@@ -71,6 +74,7 @@ class SplitwiseBase(ABC):
             image_path: Path to transaction image
             group_id: Group ID (optional)
             all_aliases: Dictionary mapping canonical names to aliases (optional)
+            date: ISO 8601 formatted date string (optional, e.g., "2025-12-21T19:12:00Z")
             
         Returns:
             Response dict

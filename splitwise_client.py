@@ -24,7 +24,8 @@ class SplitwiseClient:
         participants: List[str],
         group_id: Optional[str] = None,
         image_path: Optional[str] = None,
-        all_aliases: Optional[Dict[str, List[str]]] = None
+        all_aliases: Optional[Dict[str, List[str]]] = None,
+        date: Optional[str] = None
     ) -> Dict:
         """Create a Splitwise expense.
         
@@ -35,6 +36,7 @@ class SplitwiseClient:
             group_id: Splitwise group ID (optional)
             image_path: Path to image file to attach (optional)
             all_aliases: Dictionary mapping canonical names to aliases (optional)
+            date: ISO 8601 formatted date string (optional, e.g., "2025-12-21T19:12:00Z")
             
         Returns:
             Response from Splitwise API
@@ -42,7 +44,7 @@ class SplitwiseClient:
         try:
             # Build instructions for MCP with alias context
             instructions = self._build_instructions(
-                description, cost, participants, group_id, image_path, all_aliases
+                description, cost, participants, group_id, image_path, all_aliases, date
             )
             
             logger.info(f"Creating Splitwise expense: {description} - ₹{cost}")
@@ -84,7 +86,8 @@ class SplitwiseClient:
         participants: List[str],
         group_id: Optional[str] = None,
         image_path: Optional[str] = None,
-        all_aliases: Optional[Dict[str, List[str]]] = None
+        all_aliases: Optional[Dict[str, List[str]]] = None,
+        date: Optional[str] = None
     ) -> str:
         """Build instructions for MCP tool call with alias context.
         
@@ -95,6 +98,7 @@ class SplitwiseClient:
             group_id: Group ID (optional)
             image_path: Image path (optional)
             all_aliases: Dictionary mapping canonical names to their aliases
+            date: ISO 8601 formatted date string (optional, e.g., "2025-12-21T19:12:00Z")
             
         Returns:
             Instructions string
@@ -119,13 +123,22 @@ class SplitwiseClient:
         instructions += "1. Match the detected participant names to the actual Splitwise users using the alias information above\n"
         instructions += "2. Split the expense equally among the matched users (including me as the payer)\n"
         
-        if group_id:
-            instructions += f"3. Add this expense to group ID {group_id}\n"
+        # Add date instruction if provided
+        if date:
+            instructions += f"3. Set the expense date to {date} (ISO 8601 format)\n"
+            step_num = 4
         else:
-            instructions += "3. Create this expense outside of any group\n"
+            step_num = 3
+        
+        if group_id:
+            instructions += f"{step_num}. Add this expense to group ID {group_id}\n"
+            step_num += 1
+        else:
+            instructions += f"{step_num}. Create this expense outside of any group\n"
+            step_num += 1
         
         if image_path:
-            instructions += f"4. Attach the receipt image from {image_path}\n"
+            instructions += f"{step_num}. Attach the receipt image from {image_path}\n"
         
         return instructions
     
@@ -191,7 +204,8 @@ class SplitwiseClient:
         participants: List[str],
         image_path: str,
         group_id: Optional[str] = None,
-        all_aliases: Optional[Dict[str, List[str]]] = None
+        all_aliases: Optional[Dict[str, List[str]]] = None,
+        date: Optional[str] = None
     ) -> Dict:
         """Prepare expense creation with image attachment.
         
@@ -202,6 +216,7 @@ class SplitwiseClient:
             image_path: Path to transaction image
             group_id: Group ID (optional)
             all_aliases: Dictionary mapping canonical names to aliases (optional)
+            date: ISO 8601 formatted date string (optional, e.g., "2025-12-21T19:12:00Z")
             
         Returns:
             Response dict
@@ -216,7 +231,8 @@ class SplitwiseClient:
             participants=participants,
             group_id=group_id,
             image_path=image_url,
-            all_aliases=all_aliases
+            all_aliases=all_aliases,
+            date=date
         )
         
         return result

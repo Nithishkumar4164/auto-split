@@ -132,7 +132,8 @@ class SplitwiseAPIClient(SplitwiseBase):
         participants: List[str],
         group_id: Optional[str] = None,
         image_path: Optional[str] = None,
-        all_aliases: Optional[Dict[str, List[str]]] = None
+        all_aliases: Optional[Dict[str, List[str]]] = None,
+        date: Optional[str] = None
     ) -> Dict:
         """Create a Splitwise expense using the API.
         
@@ -143,6 +144,7 @@ class SplitwiseAPIClient(SplitwiseBase):
             group_id: Splitwise group ID (optional)
             image_path: Path to image file to attach (optional)
             all_aliases: Dictionary mapping canonical names to aliases (optional)
+            date: ISO 8601 formatted date string (optional, e.g., "2025-12-21T19:12:00Z")
             
         Returns:
             Response dict with success status and expense details
@@ -163,6 +165,14 @@ class SplitwiseAPIClient(SplitwiseBase):
             expense.setCost(str(cost))
             expense.setDescription(description)
             expense.setCurrencyCode('INR')  # Set currency to Indian Rupees by default
+            
+            # Set expense date if provided
+            if date:
+                try:
+                    expense.setDate(date)
+                    logger.info(f"Set expense date to: {date}")
+                except Exception as e:
+                    logger.warning(f"Failed to set expense date: {e}")
             
             if group_id:
                 expense.setGroupId(int(group_id))
@@ -297,7 +307,8 @@ class SplitwiseAPIClient(SplitwiseBase):
         participants: List[str],
         image_path: str,
         group_id: Optional[str] = None,
-        all_aliases: Optional[Dict[str, List[str]]] = None
+        all_aliases: Optional[Dict[str, List[str]]] = None,
+        date: Optional[str] = None
     ) -> Dict:
         """Prepare expense creation with image attachment.
         
@@ -308,6 +319,7 @@ class SplitwiseAPIClient(SplitwiseBase):
             image_path: Path to transaction image
             group_id: Group ID (optional)
             all_aliases: Dictionary mapping canonical names to aliases (optional)
+            date: ISO 8601 formatted date string (optional, e.g., "2025-12-21T19:12:00Z")
             
         Returns:
             Response dict
@@ -319,5 +331,6 @@ class SplitwiseAPIClient(SplitwiseBase):
             participants=participants,
             group_id=group_id,
             image_path=image_path,
-            all_aliases=all_aliases
+            all_aliases=all_aliases,
+            date=date
         )

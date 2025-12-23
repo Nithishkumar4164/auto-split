@@ -2,6 +2,7 @@
 import re
 import logging
 from typing import Dict, List, Optional
+from datetime import datetime
 from PIL import Image
 import pytesseract
 import cv2
@@ -22,6 +23,7 @@ class TransactionDetails:
         self.utr: Optional[str] = None
         self.account_number: Optional[str] = None
         self.timestamp: Optional[str] = None
+        self.date: Optional[str] = None  # ISO 8601 formatted date
         self.participants: List[str] = []
         
     def __repr__(self):
@@ -43,6 +45,7 @@ class TransactionDetails:
             'utr': self.utr,
             'account_number': self.account_number,
             'timestamp': self.timestamp,
+            'date': self.date,
             'participants': self.participants
         }
 
@@ -379,7 +382,7 @@ class ImageParser:
             text: OCR extracted text
             
         Returns:
-            Timestamp or None
+            Timestamp string or None
         """
         # Pattern for timestamp (e.g., "03:17 pm on 19 Dec 2025")
         patterns = [
@@ -394,6 +397,97 @@ class ImageParser:
                 return match.group(1)
         
         return None
+    
+    def parse_date(self, text: str) -> Optional[str]:
+        """Parse payment date from text and convert to ISO 8601 format.
+        
+        Args:
+            text: OCR extracted text
+            
+        Returns:
+            ISO 8601 formatted date string (e.g., "2025-12-21T19:12:00Z") or None
+        """
+        timestamp_str = self.parse_timestamp(text)
+        if not timestamp_str:
+            return None
+        
+        try:
+            # Try to parse "07:12 pm on 21 Dec 2025" format
+            pattern1 = r'(\d{1,2}):(\d{2})\s*(am|pm)\s+on\s+(\d{1,2})\s+(\w+)\s+(\d{4})'
+            match = re.search(pattern1, timestamp_str, re.IGNORECASE)
+            if match:
+                hour = int(match.group(1))
+                minute = int(match.group(2))
+                am_pm = match.group(3).lower()
+                day = int(match.group(4))
+                month_str = match.group(5)
+                year = int(match.group(6))
+                
+                # Convert 12-hour to 24-hour format
+                if am_pm == 'pm' and hour != 12:
+                    hour += 12
+                elif am_pm == 'am' and hour == 12:
+                    hour = 0
+                
+                # Convert month name to number
+                month_map = {
+                    'jan': 1, 'january': 1, 'feb': 2, 'february': 2,
+                    'mar': 3, 'march': 3, 'apr': 4, 'april': 4,
+                    'may': 5, 'jun': 6, 'june': 6,
+                    'jul': 7, 'july': 7, 'aug': 8, 'august': 8,
+                    'sep': 9, 'sept': 9, 'september': 9,
+                    'oct': 10, 'october': 10, 'nov': 11, 'november': 11,
+                    'dec': 12, 'december': 12
+                }
+                month = month_map.get(month_str.lower()[:3])
+                if not month:
+                    logger.warning(f"Could not parse month: {month_str}")
+                    return None
+                
+                # Create datetime object and convert to ISO 8601
+                dt = datetime(year, month, day, hour, minute, 0)
+                iso_date = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                logger.info(f"Parsed date: {timestamp_str} -> {iso_date}")
+                return iso_date
+            
+            # Try to parse "MM/DD/YYYY HH:MM" format
+            pattern2 = r'(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?'
+            match = re.search(pattern2, timestamp_str)
+            if match:
+                month = int(match.group(1))
+                day = int(match.group(2))
+                year = int(match.group(3))
+                hour = int(match.group(4))
+                minute = int(match.group(5))
+                second = int(match.group(6)) if match.group(6) else 0
+                
+                dt = datetime(year, month, day, hour, minute, second)
+                iso_date = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                logger.info(f"Parsed date: {timestamp_str} -> {iso_date}")
+                return iso_date
+            
+            # Try to parse "YYYY-MM-DD HH:MM:SS" format
+            pattern3 = r'(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})'
+            match = re.search(pattern3, timestamp_str)
+            if match:
+                year = int(match.group(1))
+                month = int(match.group(2))
+                day = int(match.group(3))
+                hour = int(match.group(4))
+                minute = int(match.group(5))
+                second = int(match.group(6))
+                
+                dt = datetime(year, month, day, hour, minute, second)
+                iso_date = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+                logger.info(f"Parsed date: {timestamp_str} -> {iso_date}")
+                return iso_date
+            
+            logger.warning(f"Could not parse timestamp format: {timestamp_str}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error parsing date: {e}", exc_info=True)
+            return None
     
     def parse_image(self, image_path: str) -> TransactionDetails:
         """Parse transaction details from image.
@@ -423,6 +517,7 @@ class ImageParser:
             details.transaction_id = details.utr  # Use same for now
             details.account_number = self.parse_account_number(text)
             details.timestamp = self.parse_timestamp(text)
+            details.date = self.parse_date(text)  # Parse and convert to ISO 8601
             
             # Parse participants from message
             if details.message:

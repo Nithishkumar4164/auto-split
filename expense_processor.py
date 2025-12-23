@@ -124,7 +124,8 @@ class ExpenseProcessor:
                 participants=detected_participants,
                 image_path=image_path,
                 group_id=group_id,
-                all_aliases=all_aliases
+                all_aliases=all_aliases,
+                date=transaction.date
             )
             
             if not expense_result.get('success'):
