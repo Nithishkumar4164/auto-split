@@ -41,22 +41,32 @@ class SplitwiseAPIClient(SplitwiseBase):
         self,
         participants: List[str],
         all_aliases: Optional[Dict[str, List[str]]] = None
-    ) -> List[int]:
+    ) -> tuple[List[int], Dict[str, str], int]:
         """Match participant names to Splitwise friend IDs.
         
         Args:
-            participants: List of detected participant names
+            participants: List of detected participant names (can contain duplicates)
             all_aliases: Dictionary mapping canonical names to aliases
             
         Returns:
-            List of friend IDs
+            Tuple of (List of friend IDs with duplicates preserved, 
+                     Dict mapping participant names to friend names,
+                     Number of extra shares for current user from "me" aliases)
         """
         if not participants:
-            return []
+            return [], {}, 0
         
         try:
             friends = self.splitwise.getFriends()
-            matched_ids = []
+            matched_ids = []  # Can contain duplicates
+            participant_to_friend = {}
+            current_user_extra_shares = 0
+            
+            # Extract "me" aliases if present
+            me_aliases = []
+            if all_aliases and "me" in all_aliases:
+                me_aliases = [alias.lower() for alias in all_aliases["me"]]
+                logger.info(f"Found 'me' aliases: {me_aliases}")
             
             logger.info(f"Attempting to match participants: {participants}")
             logger.info(f"Available aliases: {all_aliases}")
@@ -65,26 +75,35 @@ class SplitwiseAPIClient(SplitwiseBase):
                 participant_lower = participant.lower().strip()
                 matched = False
                 
+                # First check if participant matches "me" aliases
+                if me_aliases and participant_lower in me_aliases:
+                    current_user_extra_shares += 1
+                    participant_to_friend[participant] = "You (current user)"
+                    logger.info(f"✓ Matched '{participant}' to current user via 'me' alias")
+                    matched = True
+                    continue
+                
                 # Try to match with friends
                 for friend in friends:
                     friend_first = friend.getFirstName() or ""
                     friend_last = friend.getLastName() or ""
-                    friend_name = f"{friend_first} {friend_last}".strip().lower()
+                    friend_name = f"{friend_first} {friend_last}".strip()
+                    friend_name_lower = friend_name.lower()
                     
                     # Exact match with full name
-                    if participant_lower == friend_name:
-                        if friend.getId() not in matched_ids:
-                            matched_ids.append(friend.getId())
-                            logger.info(f"✓ Matched '{participant}' to {friend_first} {friend_last} (ID: {friend.getId()}) - exact name match")
-                            matched = True
+                    if participant_lower == friend_name_lower:
+                        matched_ids.append(friend.getId())
+                        participant_to_friend[participant] = friend_name
+                        logger.info(f"✓ Matched '{participant}' to {friend_name} (ID: {friend.getId()}) - exact name match")
+                        matched = True
                         break
                     
                     # Partial match with first or last name
-                    if participant_lower in friend_name or friend_name in participant_lower:
-                        if friend.getId() not in matched_ids:
-                            matched_ids.append(friend.getId())
-                            logger.info(f"✓ Matched '{participant}' to {friend_first} {friend_last} (ID: {friend.getId()}) - partial name match")
-                            matched = True
+                    if participant_lower in friend_name_lower or friend_name_lower in participant_lower:
+                        matched_ids.append(friend.getId())
+                        participant_to_friend[participant] = friend_name
+                        logger.info(f"✓ Matched '{participant}' to {friend_name} (ID: {friend.getId()}) - partial name match")
+                        matched = True
                         break
                     
                     # Check aliases if provided
@@ -93,37 +112,42 @@ class SplitwiseAPIClient(SplitwiseBase):
                             canonical_lower = canonical_name.lower()
                             
                             # Check if this friend matches the canonical name
-                            if canonical_lower == friend_name or canonical_lower in friend_name:
+                            if canonical_lower == friend_name_lower or canonical_lower in friend_name_lower:
                                 # Now check if participant matches any alias
                                 aliases_lower = [a.lower() for a in aliases]
                                 if participant_lower in aliases_lower:
-                                    if friend.getId() not in matched_ids:
-                                        matched_ids.append(friend.getId())
-                                        logger.info(f"✓ Matched '{participant}' to {friend_first} {friend_last} (ID: {friend.getId()}) - alias match via '{canonical_name}'")
-                                        matched = True
+                                    matched_ids.append(friend.getId())
+                                    participant_to_friend[participant] = friend_name
+                                    logger.info(f"✓ Matched '{participant}' to {friend_name} (ID: {friend.getId()}) - alias match via '{canonical_name}'")
+                                    matched = True
                                     break
                                 
                                 # Check if participant is a substring of any alias or vice versa
                                 for alias in aliases_lower:
                                     if participant_lower in alias or alias in participant_lower:
-                                        if friend.getId() not in matched_ids:
-                                            matched_ids.append(friend.getId())
-                                            logger.info(f"✓ Matched '{participant}' to {friend_first} {friend_last} (ID: {friend.getId()}) - partial alias match")
-                                            matched = True
+                                        matched_ids.append(friend.getId())
+                                        participant_to_friend[participant] = friend_name
+                                        logger.info(f"✓ Matched '{participant}' to {friend_name} (ID: {friend.getId()}) - partial alias match")
+                                        matched = True
                                         break
                     
                     if matched:
                         break
                 
                 if not matched:
-                    logger.warning(f"✗ Could not match participant '{participant}' to any Splitwise friend")
+                    # If no match found, assign share to current user
+                    logger.warning(f"✗ Could not match participant '{participant}' to any Splitwise friend - assigning share to current user")
+                    current_user_extra_shares += 1
+                    participant_to_friend[participant] = "You (current user) - unmatched"
             
             logger.info(f"Matched {len(matched_ids)} friends: {matched_ids}")
-            return matched_ids
+            logger.info(f"Current user extra shares: {current_user_extra_shares}")
+            logger.info(f"Participant to friend mapping: {participant_to_friend}")
+            return matched_ids, participant_to_friend, current_user_extra_shares
             
         except Exception as e:
             logger.error(f"Error matching participants: {e}", exc_info=True)
-            return []
+            return [], {}, 0
     
     def create_expense(
         self,
@@ -158,7 +182,7 @@ class SplitwiseAPIClient(SplitwiseBase):
                 }
             
             # Match participants to friend IDs
-            friend_ids = self._match_participants_to_friends(participants, all_aliases)
+            friend_ids, participant_mapping, current_user_extra_shares = self._match_participants_to_friends(participants, all_aliases)
             
             # Create expense object
             expense = Expense()
@@ -182,24 +206,42 @@ class SplitwiseAPIClient(SplitwiseBase):
             current_user_expense.setId(current_user.getId())
             current_user_expense.setPaidShare(str(cost))
             
-            # Calculate owed share with rounding
-            total_users = len(friend_ids) + 1  # Friends + current user
-            owed_per_person = cost / total_users
+            # Count how many shares each friend has (handles duplicates)
+            from collections import Counter
+            friend_share_counts = Counter(friend_ids)
             
-            # Round each person's share to 2 decimal places
-            rounded_owed_per_person = round(owed_per_person, 2)
+            # Calculate total shares including current user
+            # Current user gets 1 share as payer + any extra shares from "me" aliases
+            current_user_shares = 1 + current_user_extra_shares
+            total_shares = len(friend_ids) + current_user_shares  # Each appearance counts as 1 share
+            cost_per_share = cost / total_shares
             
-            # Calculate sum of all rounded shares
-            total_rounded_shares = rounded_owed_per_person * total_users
+            # Round per-share amount to 2 decimal places
+            rounded_cost_per_share = round(cost_per_share, 2)
             
-            # Calculate difference (remainder)
-            remainder = cost - total_rounded_shares
+            logger.info(f"Total shares: {total_shares} (current user: {current_user_shares}, friends: {len(friend_ids)})")
+            if current_user_extra_shares > 0:
+                logger.info(f"Current user has {current_user_extra_shares} extra share(s) from 'me' aliases")
+            logger.info(f"Cost per share: ₹{rounded_cost_per_share}")
+            if len(friend_share_counts) < len(friend_ids):
+                logger.info(f"Duplicate friends detected. Share counts: {dict(friend_share_counts)}")
             
-            # Adjust current user's share to absorb rounding differences
-            # This ensures total owed shares exactly equal the cost
-            current_user_owed = rounded_owed_per_person
+            # Calculate current user's share (base share + extra shares from "me" aliases)
+            current_user_owed = rounded_cost_per_share * current_user_shares
+            
+            # Calculate total owed by friends
+            friend_total_owed = 0
+            unique_friends = {}
+            
+            for friend_id, count in friend_share_counts.items():
+                friend_owed_amount = round(rounded_cost_per_share * count, 2)
+                unique_friends[friend_id] = friend_owed_amount
+                friend_total_owed += friend_owed_amount
+                logger.info(f"Friend ID {friend_id}: {count} share(s) = ₹{friend_owed_amount}")
+            
+            # Calculate remainder and adjust current user's share
+            remainder = cost - (current_user_owed + friend_total_owed)
             if abs(remainder) < 1.0 and remainder != 0:
-                # Add remainder (can be positive or negative) to current user's share
                 current_user_owed = round(current_user_owed + remainder, 2)
                 logger.info(f"Adjusting for rounding: remainder {remainder:.2f}, current user's share: {current_user_owed:.2f}")
             elif remainder != 0:
@@ -209,12 +251,12 @@ class SplitwiseAPIClient(SplitwiseBase):
             
             users = [current_user_expense]
             
-            # Add friends with rounded shares
-            for friend_id in friend_ids:
+            # Add each unique friend with their calculated share
+            for friend_id, owed_amount in unique_friends.items():
                 friend_expense = ExpenseUser()
                 friend_expense.setId(friend_id)
                 friend_expense.setPaidShare('0.00')
-                friend_expense.setOwedShare(str(rounded_owed_per_person))
+                friend_expense.setOwedShare(str(owed_amount))
                 users.append(friend_expense)
             
             expense.setUsers(users)
@@ -253,11 +295,64 @@ class SplitwiseAPIClient(SplitwiseBase):
             
             logger.info(f"Created expense ID: {created_expense.getId()}")
             
+            # Add a comment to the expense
+            comment_text = (
+                "This entry was added by a bot.\n"
+                "Please feel free to reach out to the expense creator if you believe you are added incorrectly in this expense or if your share is wrong"
+            )
+            
+            # Add participant mapping information if available
+            if participant_mapping:
+                comment_text += "\n\nParticipant name matching:"
+                # Track which friend names appeared multiple times
+                friend_name_counts = {}
+                unmatched_count = 0
+                me_alias_count = 0
+                
+                for detected_name, friend_name in participant_mapping.items():
+                    comment_text += f"\n• '{detected_name}' → {friend_name}"
+                    
+                    if friend_name == "You (current user) - unmatched":
+                        unmatched_count += 1
+                    elif friend_name == "You (current user)":
+                        me_alias_count += 1
+                    else:
+                        friend_name_counts[friend_name] = friend_name_counts.get(friend_name, 0) + 1
+                
+                # If any friend appeared multiple times, show share allocation
+                duplicates_found = any(count > 1 for count in friend_name_counts.values())
+                current_user_has_extra = current_user_extra_shares > 0
+                
+                if duplicates_found or current_user_has_extra:
+                    comment_text += "\n\nShare allocation:"
+                    for friend_name, count in friend_name_counts.items():
+                        if count > 1:
+                            comment_text += f"\n• {friend_name}: {count} shares"
+                    
+                    # Show current user's total shares breakdown
+                    if current_user_has_extra:
+                        total_current_user_shares = 1 + current_user_extra_shares
+                        breakdown_parts = ["1 as payer"]
+                        if me_alias_count > 0:
+                            breakdown_parts.append(f"{me_alias_count} from 'me' aliases")
+                        if unmatched_count > 0:
+                            breakdown_parts.append(f"{unmatched_count} unmatched")
+                        breakdown = " + ".join(breakdown_parts)
+                        comment_text += f"\n• You (current user): {total_current_user_shares} shares ({breakdown})"
+            
+            try:
+                self.splitwise.createComment(created_expense.getId(), comment_text)
+                logger.info(f"Added comment to expense {created_expense.getId()}")
+            except Exception as e:
+                logger.warning(f"Failed to add comment to expense: {e}")
+            
             return {
                 'success': True,
                 'expense_id': created_expense.getId(),
                 'matched_friends': friend_ids,
-                'total_users': total_users,
+                'unique_friends': list(unique_friends.keys()),
+                'total_shares': total_shares,
+                'share_counts': dict(friend_share_counts),
                 'message': 'Expense created successfully via API'
             }
             
