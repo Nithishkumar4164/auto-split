@@ -77,20 +77,27 @@ class ImageParser:
         if img is None:
             raise ValueError(f"Could not read image from {image_path}")
         
-        # Resize (Upscale 2x) - improves OCR accuracy for small text
-        img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+        # Resize (Upscale 3x) - improves OCR accuracy for small text
+        img = cv2.resize(img, None, fx=3, fy=3, interpolation=cv2.INTER_LINEAR)
         
         # Convert to grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Thresholding (Binarization) to remove colored backgrounds
-        # Using fixed threshold (150) instead of OTSU for more consistent results
-        _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+        # Enhance contrast using CLAHE (helps make faint text more visible)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        
+        # Apply denoising before thresholding
+        denoised = cv2.fastNlMeansDenoising(enhanced, None, 10, 7, 21)
+        
+        # Use OTSU's binarization for automatic threshold selection
+        # This adapts to the image's brightness distribution
+        _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
         return thresh
     
     def extract_text(self, image_path: str) -> str:
-        """Extract text from image using OCR.
+        """Extract text from image using OCR with multiple strategies.
         
         Args:
             image_path: Path to the image file
@@ -99,241 +106,258 @@ class ImageParser:
             Extracted text
         """
         try:
-            # Preprocess image
+            # Try BOTH preprocessed and original image
+            # Sometimes preprocessing removes important symbols like ₹
             processed_img = self.preprocess_image(image_path)
+            original_img = cv2.imread(image_path)
             
-            # Run Tesseract with Layout Analysis (PSM 6 = assume a block of text)
-            # This improves accuracy for receipt/screenshot images
-            custom_config = r'--psm 6'
+            images_to_try = [
+                ('preprocessed', processed_img),
+                ('original', original_img)
+            ]
             
-            # Use image_to_data to get confidence scores and filter low-confidence words
-            data = pytesseract.image_to_data(processed_img, config=custom_config, output_type=pytesseract.Output.DICT)
+            # Try multiple PSM modes - different modes work better for different images
+            psm_modes = [3, 6, 4, 11]  # 3=auto, 6=block, 4=single column, 11=sparse text
+            best_text = ""
+            best_score = 0
+            best_method = ""
             
-            # Filter out low confidence words and empty text
-            # Reconstruct text preserving line structure
-            n_boxes = len(data['text'])
-            lines_dict = {}  # Use dict to group by line_num
+            for img_type, img in images_to_try:
+                for psm in psm_modes:
+                    try:
+                        # Try with different OEM (OCR Engine Modes)
+                        # OEM 3 = Default (Legacy + LSTM), OEM 1 = LSTM only
+                        custom_config = f'--psm {psm} --oem 3'
+                        data = pytesseract.image_to_data(img, config=custom_config, output_type=pytesseract.Output.DICT)
+                        
+                        # Filter and reconstruct text
+                        n_boxes = len(data['text'])
+                        lines_dict = {}
+                        total_conf = 0
+                        conf_count = 0
+                        
+                        for i in range(n_boxes):
+                            word = data['text'][i]
+                            conf = int(data['conf'][i]) if data['conf'][i] else 0
+                            line_num = int(data['line_num'][i]) if data['line_num'][i] else 0
+                            
+                            # Lower confidence threshold to catch more text
+                            # Use even lower threshold (10) for sparse text mode (PSM 11)
+                            min_conf = 10 if psm == 11 else 15
+                            if word.strip() and conf > min_conf:
+                                if line_num not in lines_dict:
+                                    lines_dict[line_num] = []
+                                lines_dict[line_num].append(word)
+                                total_conf += conf
+                                conf_count += 1
+                        
+                        # Reconstruct text
+                        sorted_lines = sorted(lines_dict.items())
+                        lines = [" ".join(words) for _, words in sorted_lines]
+                        text = "\n".join(lines)
+                        
+                        # Score this extraction
+                        # Higher score = more text + higher confidence + contains rupee symbol
+                        avg_conf = total_conf / conf_count if conf_count > 0 else 0
+                        score = len(text) * 0.5 + avg_conf * 0.3
+                        
+                        # HUGE boost for rupee symbols (real or OCR errors)
+                        if '₹' in text or 'Rs' in text:
+                            score += 300  # Highest priority
+                        
+                        # Big boost for amount-like patterns (OCR errors of rupee symbol)
+                        # C27, ~50, <130, Z45, c30, etc.
+                        import re
+                        amount_patterns = [
+                            r'\b[Cc~Zz]\s*\d{2,}',  # C27, ~50, Z45, c30
+                            r'<\s*\d{2,}',  # <130
+                            r'\?\s*\d{2,}',  # ?27
+                        ]
+                        for pattern in amount_patterns:
+                            if re.search(pattern, text):
+                                score += 200  # Very high priority for amount patterns
+                                logger.debug(f"Found amount pattern '{pattern}' in text")
+                                break
+                        
+                        method = f"{img_type}/PSM{psm}"
+                        logger.debug(f"{method}: {len(text)} chars, avg_conf={avg_conf:.1f}, score={score:.1f}, has_₹={('₹' in text or 'Rs' in text)}")
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_text = text
+                            best_method = method
+                            
+                    except Exception as e:
+                        logger.debug(f"{img_type}/PSM{psm} failed: {e}")
+                        continue
             
-            for i in range(n_boxes):
-                word = data['text'][i]
-                conf = int(data['conf'][i]) if data['conf'][i] else 0
-                line_num = int(data['line_num'][i]) if data['line_num'][i] else 0
-                
-                # Filter out empty text and low confidence words
-                if word.strip() and conf > 30:
-                    # Group words by line number
-                    if line_num not in lines_dict:
-                        lines_dict[line_num] = []
-                    lines_dict[line_num].append(word)
+            logger.info(f"Extracted text from {image_path} using {best_method}")
+            logger.debug(f"OCR Text ({len(best_text)} chars):\n{best_text}")
             
-            # Convert to list of lines, sorted by line number
-            sorted_lines = sorted(lines_dict.items())
-            lines = [" ".join(words) for _, words in sorted_lines]
-            
-            # Join lines with newlines to preserve structure
-            text = "\n".join(lines)
-            
-            logger.info(f"Extracted text from {image_path}")
-            logger.debug(f"OCR Text:\n{text}")
-            logger.debug(f"OCR Text length: {len(text)} characters")
-            
-            return text
+            return best_text
         except Exception as e:
             logger.error(f"Error extracting text from {image_path}: {e}")
             return ""
     
     def parse_amount(self, text: str) -> Optional[float]:
-        """Parse amount from text.
+        """Parse amount from text using prioritized pattern matching."""
+        if not text:
+            return None
+
+        # 1. Clean the text to handle common OCR issues
+        # Remove commas to make number parsing easier (e.g. "1,234" -> "1234")
+        clean_text = text.replace(',', '')
         
-        Args:
-            text: OCR extracted text
+        candidates = []  # Format: (amount, priority, position)
+
+        # 2. Priority 1: Explicit Rupee Symbol (₹) near "Paid to" section
+        # This handles the main amount display in UPI screenshots
+        # Strategy: Split text into lines and look for rupee symbol in lines after "Paid to"
+        # Stop at section boundaries like "Transfer Details", "Payment details", "Message", etc.
+        lines = clean_text.split('\n')
+        in_paid_to_section = False
+        paid_to_section_lines = []
+        
+        for line in lines:
+            # Start capturing after "Paid to"
+            if re.search(r'Paid\s+to', line, re.IGNORECASE):
+                in_paid_to_section = True
+                continue
             
-        Returns:
-            Parsed amount or None
-        """
-        # Patterns prioritized by reliability - try most specific first
-        # IMPORTANT: Patterns with ₹ symbol should always take precedence
-        patterns_with_rupee = [
-            # Most common: ₹ or Rs followed by digits (with optional comma separators and decimals)
-            # This should match ₹130, ₹460, ₹1,234.56, Rs. 460
-            r'(?:₹|Rs\.?)\s*([0-9,]+\.?[0-9]*)',
+            # Stop at section boundaries
+            if in_paid_to_section:
+                # Use flexible patterns for section boundaries
+                # Transaction ID might be read as "TransactionID", "Transaction 1D", etc.
+                if re.search(r'(?:Transfer|Payment)\s*details?|Message|Transaction\s*I?D|Debited\s*from', line, re.IGNORECASE):
+                    break
+                paid_to_section_lines.append(line)
+        
+        # Look for rupee symbols in the captured "Paid to" section
+        if paid_to_section_lines:
+            paid_to_text = '\n'.join(paid_to_section_lines)
+            logger.debug(f"'Paid to' section ({len(paid_to_section_lines)} lines): {paid_to_text[:100]}")
             
-            # Amount before rupee symbol
-            r'([0-9,]+\.?[0-9]*)\s*₹',  # 460₹, 460 ₹
-        ]
-        
-        # Context-based patterns (these often have ₹ nearby)
-        context_patterns = [
-            # Context-based patterns (paid, amount, etc.) - prioritize these
-            r'(?:Paid|Amount|Total|Price|Cost|Debited)\s*:?\s*[₹zZ]?\s*([0-9,]+\.?[0-9]*)',
-            # OCR ERROR: ₹ read as "2" in payment contexts (e.g., "Paid to: 2130" -> ₹130)
-            r'(?:Paid|Amount|Total|Price|Cost|Debited)\s*:?\s*2([1-9]\d{0,3})(?:\s|$|[^\d])',  # "Paid to: 2130" -> 130
-        ]
-        
-        # OCR error patterns (only use when no ₹ symbol found)
-        ocr_error_patterns = [
-            # OCR ERROR: ₹ sometimes read as 'z' or 'Z' followed by digits
-            r'[zZ]\s*([0-9,]+\.?[0-9]*)',  # z1, Z1, z460 (₹ misread as z)
-        ]
-        
-        # Other patterns
-        other_patterns = [
-            # INR prefix
-            r'INR\s*([0-9,]+\.?[0-9]*)',  # INR 460
-            
-            # Fallback: standalone number (3-6 digits) - but not years like 2025
-            # Only match numbers starting with 1-9 (including 130) to avoid dates and small OCR errors
-            r'(?:^|\s)([1-9]\d{2,5})(?:\s|$)',  # 130, 460 (as standalone number)
-        ]
-        
-        # Track all valid amounts found with their context
-        valid_amounts = []
-        
-        # First, collect all amounts with ₹ symbol (highest priority)
-        for pattern in patterns_with_rupee:
-            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
-            for match in matches:
-                amount_str = match.group(1).replace(',', '').replace(' ', '')
+            # Common OCR errors: ₹ → C, z, Z, ?, 2, ~, <
+            # Use word boundary \b to ensure C/c/z/Z are standalone (not part of "Dec", etc.)
+            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|~|<|\b[CczZ])\s*(\d+(?:\.\d{1,2})?)', paid_to_text, re.IGNORECASE)
+            for match in rupee_matches:
                 try:
-                    amount = float(amount_str)
-                    if 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
-                        context_start = max(0, match.start() - 30)
-                        context_end = min(len(text), match.end() + 30)
-                        context = text[context_start:context_end].lower()
-                        
-                        priority = 'high'  # Always high priority for ₹ amounts
-                        if 'paid to' in context or 'debited from' in context:
-                            priority = 'highest'  # Highest priority for amounts in transaction sections
-                        
-                        valid_amounts.append((amount, match.start(), priority))
-                        logger.debug(f"Found ₹ amount: ₹{amount} using pattern: {pattern} (priority: {priority})")
+                    val = float(match.group(1))
+                    # Valid amount: > 0 and not a year (2020-2030)
+                    if val > 0 and not (2020 <= val <= 2030):
+                        # Highest priority for rupee symbol in "Paid to" section
+                        candidates.append((val, 100, match.start()))
+                        logger.debug(f"Found rupee symbol in 'Paid to' section: ₹{val}")
+                    elif 2020 <= val <= 2030:
+                        logger.debug(f"Skipping year in 'Paid to' section: {val}")
                 except ValueError:
                     continue
-        
-        # If we found amounts with ₹ symbol, skip OCR error patterns to avoid false positives
-        has_rupee_amounts = any(p == 'high' or p == 'highest' for _, _, p in valid_amounts)
-        
-        # Collect context-based patterns
-        for pattern in context_patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
-            for match in matches:
-                amount_str = match.group(1).replace(',', '').replace(' ', '')
+
+        # 3. Priority 2: Rupee Symbol anywhere else (fallback)
+        # This catches amounts in other sections if not found in "Paid to"
+        if not candidates:  # Only search elsewhere if not found in paid_to section
+            # Common OCR errors: ₹ → C, z, Z, ?, 2, ~, <
+            # Use word boundary \b to ensure C/c/z/Z are standalone (not part of "Dec", etc.)
+            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|~|<|\b[CczZ])\s*(\d+(?:\.\d{1,2})?)', clean_text, re.IGNORECASE)
+            for match in rupee_matches:
                 try:
-                    amount = float(amount_str)
-                    if 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
-                        context_start = max(0, match.start() - 30)
-                        context_end = min(len(text), match.end() + 30)
-                        context = text[context_start:context_end].lower()
-                        
-                        priority = 'normal'
-                        if 'paid to' in context or 'debited from' in context:
-                            priority = 'high'
-                        
-                        valid_amounts.append((amount, match.start(), priority))
-                        logger.debug(f"Found context amount: ₹{amount} using pattern: {pattern} (priority: {priority})")
+                    val = float(match.group(1))
+                    # Valid amount: > 0 and not a year (2020-2030)
+                    if val > 0 and not (2020 <= val <= 2030):
+                        candidates.append((val, 80, match.start()))
+                        logger.debug(f"Found rupee symbol elsewhere: ₹{val}")
+                    elif 2020 <= val <= 2030:
+                        logger.debug(f"Skipping year elsewhere: {val}")
                 except ValueError:
                     continue
-        
-        # Only use OCR error patterns if no ₹ amounts found (to avoid false positives)
-        if not has_rupee_amounts:
-            for pattern in ocr_error_patterns:
-                matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
+
+        # 4. Priority 3: Contextual Search (specific patterns only)
+        # Look for number immediately after "Paid to" line (without matching UPI IDs)
+        # This is more restrictive than before - only matches direct amounts
+        if not candidates:  # Only if no rupee symbol found
+            # Pattern: Match number that appears on its own line or after specific keywords
+            context_patterns = [
+                r'(?:Amount|Total|Price)\s*:?\s*(\d+(?:\.\d{1,2})?)',  # "Amount: 50"
+                r'(?:Paid|Debited)\s*:?\s*(?:₹|Rs\.?)?\s*(\d+(?:\.\d{1,2})?)',  # "Paid: 50"
+            ]
+            for pattern in context_patterns:
+                matches = re.finditer(pattern, clean_text, re.IGNORECASE)
                 for match in matches:
-                    amount_str = match.group(1).replace(',', '').replace(' ', '')
                     try:
-                        amount = float(amount_str)
-                        match_text = match.group(0).lower()
-                        
-                        # Only apply OCR correction for very small amounts (1-9) when 'z' is present
-                        if 1 <= amount <= 9 and 'z' in match_text:
-                            logger.info(f"Detected OCR error: {amount} via z pattern")
-                            valid_amounts.append((amount, match.start(), 'ocr_corrected'))
-                        elif 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
-                            valid_amounts.append((amount, match.start(), 'normal'))
-                            logger.debug(f"Found OCR amount: ₹{amount} using pattern: {pattern}")
+                        val = float(match.group(1))
+                        if val > 0 and not (2020 <= val <= 2030):
+                            candidates.append((val, 50, match.start()))
+                            logger.debug(f"Found context match: {val}")
                     except ValueError:
                         continue
+
+        # 5. Priority 4: The "2" Glitch Fix (Specific to Indian UPI)
+        # If we found a candidate like 2130 but NO candidate like 130, check if 2130 -> 130 makes sense
+        # Only apply this correction to high-priority matches (rupee symbols) to avoid false corrections
+        ocr_correction_candidates = []
+        existing_values = {c[0] for c in candidates}
         
-        # Collect other patterns
-        for pattern in other_patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
-            for match in matches:
-                amount_str = match.group(1).replace(',', '').replace(' ', '')
-                try:
-                    amount = float(amount_str)
-                    if 1 <= amount <= 1000000 and not (2020 <= amount <= 2099):
-                        valid_amounts.append((amount, match.start(), 'normal'))
-                        logger.debug(f"Found other amount: ₹{amount} using pattern: {pattern}")
-                except ValueError:
-                    continue
-        
-        # OCR Error Correction: ₹ sometimes read as "2"
-        # Check if any amount starts with "2" and is in a payment context
-        # Examples: "2130" -> ₹130, "213" -> ₹13, "21" -> ₹1
-        corrected_amounts = []
-        for amount, pos, priority in valid_amounts:
-            # Convert to integer string to check for leading "2"
-            if amount.is_integer():
-                amount_int = int(amount)
-                amount_str = str(amount_int)
-            else:
-                # For floats, check the integer part
-                amount_str = str(int(amount))
-            
-            # Check if amount starts with "2" and has 2-5 digits (20-29999 range)
-            # This catches cases like 2130, 213, 21 where ₹ was misread as "2"
-            if amount_str.startswith('2') and len(amount_str) >= 2 and 20 <= amount <= 29999:
-                # Skip if it's a year (2020-2099)
-                if 2020 <= amount <= 2099:
-                    corrected_amounts.append((amount, pos, priority))
-                    continue
+        for val, prio, pos in candidates:
+            # Only apply OCR correction to high-priority candidates (prio >= 50)
+            # This avoids correcting random numbers from fallback matches
+            if prio < 50:
+                continue
                 
-                # Try removing the leading "2"
-                corrected_str = amount_str[1:]  # Remove first character "2"
+            val_str = str(int(val)) if val.is_integer() else str(val)
+            if val_str.startswith('2') and len(val_str) > 1:
                 try:
-                    corrected_amount = float(corrected_str)
-                    
-                    # Only correct if:
-                    # 1. Corrected amount is reasonable (1-1000000)
-                    # 2. Corrected amount doesn't start with 0 (avoid "20" -> "0")
-                    # 3. It's in a payment context
-                    if 1 <= corrected_amount <= 1000000 and not corrected_str.startswith('0'):
-                        # Check if it's in a payment context
-                        context_start = max(0, pos - 50)
-                        context_end = min(len(text), pos + 50)
-                        context = text[context_start:context_end].lower()
-                        
-                        # If in payment context, this is likely an OCR error (₹ misread as "2")
-                        if ('paid to' in context or 'debited from' in context or 
-                            'amount' in context or 'total' in context or
-                            'paid' in context or 'debited' in context or
-                            'transfer' in context):
-                            logger.info(f"Detected OCR error: {amount} is likely ₹{corrected_amount} (₹ misread as '2')")
-                            # Use high priority if in payment context, otherwise keep original priority
-                            new_priority = 'high' if ('paid to' in context or 'debited from' in context) else priority
-                            corrected_amounts.append((corrected_amount, pos, new_priority))
-                            continue
-                except (ValueError, IndexError):
+                    corrected = float(val_str[1:])  # Strip leading '2'
+                    if corrected > 0 and corrected not in existing_values:
+                        ocr_correction_candidates.append((corrected, prio - 10, pos))
+                        logger.debug(f"OCR correction candidate: {corrected} (from {val})")
+                except ValueError:
                     pass
-            
-            # Keep original amount if no correction applied
-            corrected_amounts.append((amount, pos, priority))
         
-        # Use corrected amounts if any corrections were made
-        if corrected_amounts:
-            valid_amounts = corrected_amounts
+        candidates.extend(ocr_correction_candidates)
+
+        # 6. Fallback: Find ANY standalone number (but avoid Transaction IDs, UPI IDs, timestamps)
+        if not candidates:
+            # Split into lines to check context
+            lines = clean_text.split('\n')
+            for line in lines:
+                # Skip lines that look like timestamps (e.g., "06:13 pm on 24 Dec")
+                if re.search(r'\d{1,2}:\d{2}\s*(am|pm)', line, re.IGNORECASE):
+                    continue
+                # Skip Transaction ID lines
+                if re.search(r'Transaction\s*I?D', line, re.IGNORECASE):
+                    continue
+                # Skip UPI ID lines
+                if '@' in line:
+                    continue
+                    
+                # Look for standalone numbers in this line
+                line_matches = re.finditer(r'\b(\d+(?:\.\d{1,2})?)\b', line)
+                for match in line_matches:
+                    try:
+                        val = float(match.group(1))
+                        # Must be reasonable transaction amount (10-100000), not a year
+                        if 10 <= val < 100000 and not (2020 <= val <= 2030):
+                             candidates.append((val, 10, match.start()))
+                             logger.debug(f"Fallback found: ₹{val} in line '{line.strip()[:50]}'")
+                    except ValueError:
+                        continue
+
+        if not candidates:
+            logger.warning("No amount found in text")
+            return None
+
+        # Log all candidates before sorting
+        if len(candidates) > 1:
+            logger.debug(f"Found {len(candidates)} candidate amounts:")
+            for amt, prio, pos in candidates:
+                logger.debug(f"  - ₹{amt} (priority: {prio}, position: {pos})")
+
+        # Sort by Priority (descending), then by Position (ascending to prefer earlier matches)
+        candidates.sort(key=lambda x: (-x[1], x[2]))
         
-        # Return the best valid amount
-        if valid_amounts:
-            # Sort by priority (highest > high > normal > ocr_corrected), then by position
-            priority_order = {'highest': 0, 'high': 1, 'normal': 2, 'ocr_corrected': 3}
-            valid_amounts.sort(key=lambda x: (priority_order.get(x[2], 2), x[1]))
-            amount = valid_amounts[0][0]
-            logger.info(f"Found amount: ₹{amount} (from {len(valid_amounts)} potential matches, priority: {valid_amounts[0][2]})")
-            return amount
-        
-        logger.warning("No amount found in text")
-        return None
+        best_amount = candidates[0][0]
+        logger.info(f"Final selected amount: ₹{best_amount} (priority: {candidates[0][1]}, position: {candidates[0][2]})")
+        return best_amount
     
     def parse_utr(self, text: str) -> Optional[str]:
         """Parse UTR number from text.
@@ -403,59 +427,55 @@ class ImageParser:
         return None
     
     def parse_message(self, text: str) -> Optional[str]:
-        """Parse message/comment from text.
+        """Extract transaction message using pattern matching.
+        
+        Looks for pattern: "Description - participant1 participant2"
+        Can appear after "Message" keyword or in "Paid to" section (OCR may scramble text)
+        Example: "Message Tea-me boops" → "Tea-me boops"
+        Example: "Paid to Milk - me sarsan Transaction" → "Milk- me sarsan"
         
         Args:
             text: OCR extracted text
             
         Returns:
-            Message or None
+            Full message string (including description and participants) or None
         """
-        # Pattern for message section - handle both newline and colon separators
-        # Try to capture everything until the next section (Transaction ID, Debited from, etc.)
-        patterns = [
-            # Most specific: Message label followed by content until next section
-            r'Message\s*[:\n]\s*(.+?)(?=\n(?:Transaction\s+ID|Debited\s+from|UTR|Account|Powered|$))',
-            r'Comment\s*[:\n]\s*(.+?)(?=\n(?:Transaction\s+ID|Debited\s+from|UTR|Account|Powered|$))',
-            r'Description\s*[:\n]\s*(.+?)(?=\n(?:Transaction\s+ID|Debited\s+from|UTR|Account|Powered|$))',
-            
-            # Simpler patterns for cases where next section might not be detected
-            r'Message\s*[:\n]\s*(.+?)(?:\n\n|\n[A-Z][A-Z\s]+:|$)',
-            r'Message\s+(.+?)(?:\n|$)',  # Message followed by space
-            
-            # Fallback: look for text after common keywords
-            r'(?:Message|Comment|Description)\s*[:\s]+\s*(.+?)(?:\n\n|\n[A-Z]|$)',
-        ]
+        # Strategy 1: Look for pattern after "Message" keyword (ideal case)
+        # Try: Message on same line (PSM 11)
+        pattern1 = r'Message\s+([A-Za-z0-9\s]+\s*-\s*[A-Za-z0-9\s]+?)(?=\s+(?:Transaction\s*I?D|Debited\s+from|UTR|Powered|$))'
+        match = re.search(pattern1, text, re.IGNORECASE)
         
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            if match:
-                message = match.group(1).strip()
-                # Clean up message - remove extra whitespace and newlines, but preserve single spaces
-                message = re.sub(r'\s+', ' ', message)
-                # Remove leading/trailing whitespace
-                message = message.strip()
-                if message and len(message) > 1:
-                    logger.debug(f"Extracted message: '{message}'")
-                    return message
+        if match:
+            message = match.group(1).strip()
+            message = re.sub(r'\s*-\s*', '- ', message)
+            message = re.sub(r'\s+', ' ', message)
+            logger.debug(f"Found message after 'Message' keyword: '{message}'")
+            return message
         
-        # Fallback: Try to find text that looks like a message (contains lowercase letters and spaces)
-        # This handles cases where "Message" label might be misread by OCR
-        lines = text.split('\n')
-        for i, line in enumerate(lines):
-            line_lower = line.lower().strip()
-            # Look for "Message" keyword
-            if ('message' in line_lower or 'comment' in line_lower) and i + 1 < len(lines):
-                # Return the next line as potential message
-                next_line = lines[i + 1].strip()
-                # Make sure it looks like a message (has lowercase letters, not all caps)
-                if next_line and len(next_line) > 2 and not next_line.isupper():
-                    # Clean up
-                    next_line = re.sub(r'\s+', ' ', next_line).strip()
-                    logger.debug(f"Extracted message (fallback): '{next_line}'")
-                    return next_line
+        # Try: Message on separate line (PSM 3, 4, 6)
+        pattern2 = r'Message\s*\n\s*([A-Za-z0-9\s]+\s*-\s*[A-Za-z0-9\s]+?)(?=\s*\n|$)'
+        match = re.search(pattern2, text, re.IGNORECASE)
         
-        logger.warning("No message found in text")
+        if match:
+            message = match.group(1).strip()
+            message = re.sub(r'\s*-\s*', '- ', message)
+            message = re.sub(r'\s+', ' ', message)
+            logger.debug(f"Found message after 'Message' label: '{message}'")
+            return message
+        
+        # Strategy 2: Look for pattern in "Paid to" section (fallback for scrambled OCR)
+        # OCR sometimes puts message content in wrong place
+        pattern3 = r'Paid\s+to\s+([A-Za-z0-9\s]+\s*-\s*[A-Za-z\s]+?)(?=\s+(?:Transaction\s*I?D|Debited|UTR|Payment|$))'
+        match = re.search(pattern3, text, re.IGNORECASE)
+        
+        if match:
+            message = match.group(1).strip()
+            message = re.sub(r'\s*-\s*', '- ', message)
+            message = re.sub(r'\s+', ' ', message)
+            logger.debug(f"Found message in 'Paid to' section: '{message}'")
+            return message
+        
+        logger.warning("No message found matching pattern 'Description- participants'")
         return None
     
     def parse_participants(self, message: str) -> List[str]:
@@ -516,9 +536,21 @@ class ImageParser:
                     if clean_word.isdigit():
                         continue
                     
-                    # Skip common stop words
-                    stop_words = {'and', 'with', 'for', 'to', 'from', 'in', 'at', 'the', 'a', 'an', 'split'}
+                    # Skip common stop words and transaction-related terms
+                    stop_words = {
+                        'and', 'with', 'for', 'to', 'from', 'in', 'at', 'the', 'a', 'an', 'split',
+                        'transaction', 'id', 'debited', 'utr', 'powered', 'by', 'bank', 
+                        'transfer', 'payment', 'details', 'ves', 'lia', 'message'
+                    }
                     if clean_word in stop_words:
+                        continue
+                    
+                    # Skip if it contains many X's (account numbers like XXXXXXXXXXXYI362)
+                    if clean_word.count('x') > 3:
+                        continue
+                    
+                    # Skip if it's very long (likely transaction ID or account number)
+                    if len(clean_word) > 15:
                         continue
                     
                     # Check if it's a valid name (2+ chars, starts with letter)
@@ -537,33 +569,8 @@ class ImageParser:
                     logger.info(f"Parsed {len(participants)} participants: {participants}")
                     return participants
         
-        # Fallback: Parse using old logic for backward compatibility
-        logger.debug("No dash found, using fallback parsing")
-        
-        # Remove common words and filler
-        stop_words = {'me', 'and', 'with', 'for', 'to', 'from', 'in', 'at', 'the', 'a', 'an', 'split', 'spices'}
-        
-        # Remove numbers (like "7") which are often item counts
-        message_cleaned = re.sub(r'\b\d+\b', '', message)
-        
-        participants = []
-        words = message_cleaned.split()
-        
-        for word in words:
-            clean_word = word.lower().strip('.,!?;:')
-            
-            # Skip stop words
-            if clean_word in stop_words:
-                continue
-            
-            # Check if word looks like a name (2+ chars, starts with letter)
-            if len(word) >= 2 and word[0].isalpha():
-                participants.append(word.strip('.,!?;:'))
-        
-        if participants:
-            logger.info(f"Parsed {len(participants)} participants (fallback): {participants}")
-        
-        return participants
+        logger.debug("No participants found - message doesn't match 'Description- participants' pattern")
+        return []
     
     def parse_account_number(self, text: str) -> Optional[str]:
         """Parse account number from text.
