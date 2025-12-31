@@ -195,13 +195,15 @@ class SplitwiseAPIClient(SplitwiseBase):
             # Calculate difference (remainder)
             remainder = cost - total_rounded_shares
             
-            # If remainder is positive and less than 1, add it to current user's share
+            # Adjust current user's share to absorb rounding differences
+            # This ensures total owed shares exactly equal the cost
             current_user_owed = rounded_owed_per_person
-            if 0 < remainder < 1.0:
+            if abs(remainder) < 1.0 and remainder != 0:
+                # Add remainder (can be positive or negative) to current user's share
                 current_user_owed = round(current_user_owed + remainder, 2)
-                logger.info(f"Adding remainder {remainder:.2f} to current user's share. New share: {current_user_owed:.2f}")
+                logger.info(f"Adjusting for rounding: remainder {remainder:.2f}, current user's share: {current_user_owed:.2f}")
             elif remainder != 0:
-                logger.debug(f"Remainder {remainder:.2f} is outside threshold (< 1), not adjusting")
+                logger.warning(f"Large remainder {remainder:.2f}, not adjusting (may cause error)")
             
             current_user_expense.setOwedShare(str(current_user_owed))
             
@@ -229,9 +231,20 @@ class SplitwiseAPIClient(SplitwiseBase):
             created_expense, errors = self.splitwise.createExpense(expense)
             
             if errors:
-                logger.error(f"Errors creating expense: {errors}")
-                # Convert SplitwiseError objects to strings for JSON serialization
-                error_messages = [str(error) for error in errors] if isinstance(errors, list) else [str(errors)]
+                logger.error(f"Errors creating expense: {expense}\n {errors}")
+                # Extract detailed error messages from SplitwiseError objects
+                error_messages = []
+                errors_list = errors if isinstance(errors, list) else [errors]
+                for error in errors_list:
+                    if hasattr(error, 'getMessage'):
+                        error_messages.append(error.getMessage())
+                    elif hasattr(error, 'message'):
+                        error_messages.append(error.message)
+                    elif hasattr(error, 'errors'):
+                        error_messages.append(str(error.errors))
+                    else:
+                        error_messages.append(str(error))
+                logger.error(f"Detailed errors: {'; '.join(error_messages)}")
                 return {
                     'success': False,
                     'error': '; '.join(error_messages),
