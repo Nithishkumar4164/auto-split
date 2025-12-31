@@ -166,11 +166,11 @@ class ImageParser:
                             score += 300  # Highest priority
                         
                         # Big boost for amount-like patterns (OCR errors of rupee symbol)
-                        # C27, ~50, <130, =140, Z45, c30, etc.
+                        # C27, ~50, <130, =140, %3,033, Z45, c30, etc.
                         import re
                         amount_patterns = [
                             r'\b[Cc~Zz]\s*\d{2,}',  # C27, ~50, Z45, c30
-                            r'[<=]\s*\d{2,}',  # <130, =140
+                            r'[<=%]\s*\d[\d,]*',  # <130, =140, %3,033 (with commas)
                             r'\?\s*\d{2,}',  # ?27
                         ]
                         for pattern in amount_patterns:
@@ -237,12 +237,14 @@ class ImageParser:
             paid_to_text = '\n'.join(paid_to_section_lines)
             logger.debug(f"'Paid to' section ({len(paid_to_section_lines)} lines): {paid_to_text[:100]}")
             
-            # Common OCR errors: ₹ → C, z, Z, ?, 2, ~, <, =
+            # Common OCR errors: ₹ → C, z, Z, ?, 2, ~, <, =, %
             # Use word boundary \b to ensure C/c/z/Z are standalone (not part of "Dec", etc.)
-            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|[~<=]|\b[CczZ])\s*(\d+(?:\.\d{1,2})?)', paid_to_text, re.IGNORECASE)
+            # Allow comma separators in amounts (e.g., 3,033)
+            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|[~<=%]|\b[CczZ])\s*([\d,]+(?:\.\d{1,2})?)', paid_to_text, re.IGNORECASE)
             for match in rupee_matches:
                 try:
-                    val = float(match.group(1))
+                    # Remove commas from numbers (e.g., "3,033" → "3033")
+                    val = float(match.group(1).replace(',', ''))
                     # Valid amount: > 0 and not a year (2020-2030)
                     if val > 0 and not (2020 <= val <= 2030):
                         # Highest priority for rupee symbol in "Paid to" section
@@ -256,12 +258,14 @@ class ImageParser:
         # 3. Priority 2: Rupee Symbol anywhere else (fallback)
         # This catches amounts in other sections if not found in "Paid to"
         if not candidates:  # Only search elsewhere if not found in paid_to section
-            # Common OCR errors: ₹ → C, z, Z, ?, 2, ~, <, =
+            # Common OCR errors: ₹ → C, z, Z, ?, 2, ~, <, =, %
             # Use word boundary \b to ensure C/c/z/Z are standalone (not part of "Dec", etc.)
-            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|[~<=]|\b[CczZ])\s*(\d+(?:\.\d{1,2})?)', clean_text, re.IGNORECASE)
+            # Allow comma separators in amounts (e.g., 3,033)
+            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|[~<=%]|\b[CczZ])\s*([\d,]+(?:\.\d{1,2})?)', clean_text, re.IGNORECASE)
             for match in rupee_matches:
                 try:
-                    val = float(match.group(1))
+                    # Remove commas from numbers (e.g., "3,033" → "3033")
+                    val = float(match.group(1).replace(',', ''))
                     # Valid amount: > 0 and not a year (2020-2030)
                     if val > 0 and not (2020 <= val <= 2030):
                         candidates.append((val, 80, match.start()))
