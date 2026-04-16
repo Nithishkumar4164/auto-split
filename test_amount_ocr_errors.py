@@ -35,7 +35,7 @@ for text, expected_amount, description in test_texts:
     print(f"Text: '{text}'")
     print(f"Expected: ₹{expected_amount}")
     
-    parsed_amount = parser.parse_amount(text)
+    parsed_amount = parser._parse_amount(text)
     
     if parsed_amount == expected_amount:
         print(f"✅ PASS: Got ₹{parsed_amount}")

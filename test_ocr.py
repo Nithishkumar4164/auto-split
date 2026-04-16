@@ -19,7 +19,7 @@ print("=" * 80)
 
 # Extract raw text
 print("\n1. Extracting text with OCR...")
-text = parser.extract_text(image_path)
+text = parser._extract_text(image_path)
 
 print("\n2. RAW OCR TEXT:")
 print("-" * 80)

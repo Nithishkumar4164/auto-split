@@ -20,7 +20,7 @@ print("=" * 80)
 
 for message in test_messages:
     print(f"\nMessage: '{message}'")
-    participants = parser.parse_participants(message)
+    participants = parser._parse_participants(message)
     print(f"Participants: {participants}")
     
     # Extract title if dash present

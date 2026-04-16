@@ -107,25 +107,6 @@ class AliasManager:
         logger.warning(f"No match found for '{name}' (best score: {score})")
         return None
     
-    def match_participants(self, names: List[str], threshold: int = 80) -> List[str]:
-        """Match a list of names to canonical names.
-        
-        Args:
-            names: List of names to match
-            threshold: Minimum similarity score (0-100)
-            
-        Returns:
-            List of matched canonical names
-        """
-        matched = []
-        
-        for name in names:
-            canonical = self.get_canonical_name(name, threshold)
-            if canonical and canonical not in matched:
-                matched.append(canonical)
-        
-        return matched
-    
     def get_all_canonical_names(self) -> List[str]:
         """Get all canonical names.
         

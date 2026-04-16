@@ -1,6 +1,6 @@
 """Example script showing how the MCP prompt is constructed with aliases."""
 import json
-from splitwise_client import SplitwiseClient
+from splitwise_mcp_client import SplitwiseMCPClient as SplitwiseClient
 from alias_manager import AliasManager
 
 # Initialize components

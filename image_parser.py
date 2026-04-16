@@ -1,9 +1,8 @@
 """Image parser module for extracting transaction details using OCR."""
 import re
 import logging
-from typing import Dict, List, Optional
+from typing import List, Optional
 from datetime import datetime
-from PIL import Image
 import pytesseract
 import cv2
 import numpy as np
@@ -62,7 +61,7 @@ class ImageParser:
         if tesseract_cmd:
             pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         
-    def preprocess_image(self, image_path: str) -> np.ndarray:
+    def _preprocess_image(self, image_path: str) -> np.ndarray:
         """Preprocess image for better OCR results.
         
         Args:
@@ -96,7 +95,7 @@ class ImageParser:
         
         return thresh
     
-    def extract_text(self, image_path: str) -> str:
+    def _extract_text(self, image_path: str) -> str:
         """Extract text from image using OCR with multiple strategies.
         
         Args:
@@ -108,7 +107,7 @@ class ImageParser:
         try:
             # Try BOTH preprocessed and original image
             # Sometimes preprocessing removes important symbols like ₹
-            processed_img = self.preprocess_image(image_path)
+            processed_img = self._preprocess_image(image_path)
             original_img = cv2.imread(image_path)
             
             images_to_try = [
@@ -199,7 +198,7 @@ class ImageParser:
             logger.error(f"Error extracting text from {image_path}: {e}")
             return ""
     
-    def parse_amount(self, text: str) -> Optional[float]:
+    def _parse_amount(self, text: str) -> Optional[float]:
         """Parse amount from text using prioritized pattern matching."""
         if not text:
             return None
@@ -363,7 +362,7 @@ class ImageParser:
         logger.info(f"Final selected amount: ₹{best_amount} (priority: {candidates[0][1]}, position: {candidates[0][2]})")
         return best_amount
     
-    def parse_utr(self, text: str) -> Optional[str]:
+    def _parse_utr(self, text: str) -> Optional[str]:
         """Parse UTR number from text.
         
         Args:
@@ -389,7 +388,7 @@ class ImageParser:
         
         return None
     
-    def parse_recipient(self, text: str) -> Optional[str]:
+    def _parse_recipient(self, text: str) -> Optional[str]:
         """Parse recipient name from text.
         
         Args:
@@ -412,7 +411,7 @@ class ImageParser:
         
         return None
     
-    def parse_upi_id(self, text: str) -> Optional[str]:
+    def _parse_upi_id(self, text: str) -> Optional[str]:
         """Parse UPI ID from text.
         
         Args:
@@ -430,7 +429,7 @@ class ImageParser:
         
         return None
     
-    def parse_message(self, text: str) -> Optional[str]:
+    def _parse_message(self, text: str) -> Optional[str]:
         """Extract transaction message using pattern matching.
         
         Looks for pattern: "Description - participant1 participant2"
@@ -482,7 +481,7 @@ class ImageParser:
         logger.warning("No message found matching pattern 'Description- participants'")
         return None
     
-    def parse_participants(self, message: str) -> List[str]:
+    def _parse_participants(self, message: str) -> List[str]:
         """Parse participant names from message.
         
         Format: "ExpenseTitle- participant1 participant2 participant3"
@@ -533,7 +532,7 @@ class ImageParser:
                     
                     # Skip 'me' as it refers to current user
                     if clean_word == 'me':
-                        logger.debug(f"Skipping 'me' (current user)")
+                        logger.debug("Skipping 'me' (current user)")
                         continue
                     
                     # Skip numbers (standalone digits)
@@ -576,7 +575,7 @@ class ImageParser:
         logger.debug("No participants found - message doesn't match 'Description- participants' pattern")
         return []
     
-    def parse_account_number(self, text: str) -> Optional[str]:
+    def _parse_account_number(self, text: str) -> Optional[str]:
         """Parse account number from text.
         
         Args:
@@ -594,7 +593,7 @@ class ImageParser:
         
         return None
     
-    def parse_timestamp(self, text: str) -> Optional[str]:
+    def _parse_timestamp(self, text: str) -> Optional[str]:
         """Parse timestamp from text.
         
         Args:
@@ -617,7 +616,7 @@ class ImageParser:
         
         return None
     
-    def parse_date(self, text: str) -> Optional[str]:
+    def _parse_date(self, text: str) -> Optional[str]:
         """Parse payment date from text and convert to ISO 8601 format.
         
         Args:
@@ -626,7 +625,7 @@ class ImageParser:
         Returns:
             ISO 8601 formatted date string (e.g., "2025-12-21T19:12:00Z") or None
         """
-        timestamp_str = self.parse_timestamp(text)
+        timestamp_str = self._parse_timestamp(text)
         if not timestamp_str:
             return None
         
@@ -721,26 +720,26 @@ class ImageParser:
         
         try:
             # Extract text from image
-            text = self.extract_text(image_path)
-            
+            text = self._extract_text(image_path)
+
             if not text:
                 logger.warning(f"No text extracted from {image_path}")
                 return details
-            
+
             # Parse individual fields
-            details.amount = self.parse_amount(text)
-            details.recipient = self.parse_recipient(text)
-            details.recipient_upi = self.parse_upi_id(text)
-            details.message = self.parse_message(text)
-            details.utr = self.parse_utr(text)
-            details.transaction_id = details.utr  # Use same for now
-            details.account_number = self.parse_account_number(text)
-            details.timestamp = self.parse_timestamp(text)
-            details.date = self.parse_date(text)  # Parse and convert to ISO 8601
-            
+            details.amount = self._parse_amount(text)
+            details.recipient = self._parse_recipient(text)
+            details.recipient_upi = self._parse_upi_id(text)
+            details.message = self._parse_message(text)
+            details.utr = self._parse_utr(text)
+            details.transaction_id = details.utr
+            details.account_number = self._parse_account_number(text)
+            details.timestamp = self._parse_timestamp(text)
+            details.date = self._parse_date(text)
+
             # Parse participants from message
             if details.message:
-                details.participants = self.parse_participants(details.message)
+                details.participants = self._parse_participants(details.message)
             
             # Log what was extracted
             logger.info(f"Parsed transaction details: {details}")
