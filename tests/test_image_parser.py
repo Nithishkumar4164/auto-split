@@ -127,3 +127,52 @@ class TestImageParser:
         print(f"  Participants: {details.participants}")
         print(f"  Date: {details.date}")
         print(f"  Recipient: {details.recipient}")
+
+    def test_parse_splitwise_rupee_as_2(self):
+        """Regression test: ₹ OCR-misread as £/2 in Splitwise receipt image.
+
+        Image: splitwise.s3.amazonaws.com/…/6b7610da-eb9e-46f5-8ae1-a5cdf05630c2.jpeg
+        OCR reads '₹195' as '£195' in the Paid-to section and as '2195' in the
+        Debited-from section.  Adding £ to the rupee-error pattern fixes this.
+        """
+        test_dir = Path(__file__).parent
+        image_path = test_dir / "test_images" / "splitwise_rupee_as_2.jpeg"
+
+        if not image_path.exists():
+            pytest.skip(f"Test image not found: {image_path}")
+
+        parser = ImageParser()
+        details = parser.parse_image(str(image_path))
+
+        # Amount must be 195, not 2195 (the '£'/'2' prefix must be stripped)
+        assert details.amount == 195.0, f"Expected 195.0, got {details.amount}"
+
+        # UTR
+        assert details.utr == "780568028542", f"Expected UTR 780568028542, got {details.utr}"
+
+        # Message and participants
+        assert details.message is not None, "Message should not be None"
+        assert "breakfast" in details.message.lower(), (
+            f"Expected 'Breakfast' in message, got '{details.message}'"
+        )
+        participant_names = [p.lower() for p in details.participants]
+        assert "boops" in participant_names, (
+            f"Expected 'boops' in participants, got {details.participants}"
+        )
+        assert "me" not in participant_names, "Expected 'me' to be excluded from participants"
+
+        # Date (03 Apr 2026)
+        assert details.date is not None, "Date should not be None"
+        assert "2026-04-03" in details.date, (
+            f"Expected date to contain '2026-04-03', got {details.date}"
+        )
+
+        # Overall validity
+        assert details.is_valid(), "Transaction should be valid (has amount and UTR)"
+
+        print("\nParsed details (Splitwise rupee-as-£/2 regression):")
+        print(f"  Amount: {details.amount}")
+        print(f"  UTR: {details.utr}")
+        print(f"  Message: {details.message}")
+        print(f"  Participants: {details.participants}")
+        print(f"  Date: {details.date}")

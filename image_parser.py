@@ -163,13 +163,13 @@ class ImageParser:
                         # HUGE boost for rupee symbols (real or OCR errors)
                         if '₹' in text or 'Rs' in text:
                             score += 300  # Highest priority
-                        
+
                         # Big boost for amount-like patterns (OCR errors of rupee symbol)
-                        # C27, ~50, <130, =140, %3,033, Z45, c30, etc.
+                        # C27, ~50, <130, =140, %3,033, Z45, c30, £195, etc.
                         import re
                         amount_patterns = [
                             r'\b[Cc~Zz]\s*\d{2,}',  # C27, ~50, Z45, c30
-                            r'[<=%]\s*\d[\d,]*',  # <130, =140, %3,033 (with commas)
+                            r'[<=£%]\s*\d[\d,]*',  # <130, =140, £195, %3,033 (with commas)
                             r'\?\s*\d{2,}',  # ?27
                         ]
                         for pattern in amount_patterns:
@@ -239,7 +239,7 @@ class ImageParser:
             # Common OCR errors: ₹ → C, z, Z, ?, 2, ~, <, =, %
             # Use word boundary \b to ensure C/c/z/Z are standalone (not part of "Dec", etc.)
             # Allow comma separators in amounts (e.g., 3,033)
-            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|[~<=%]|\b[CczZ])\s*([\d,]+(?:\.\d{1,2})?)', paid_to_text, re.IGNORECASE)
+            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|[~<=£%]|\b[CczZ])\s*([\d,]+(?:\.\d{1,2})?)', paid_to_text, re.IGNORECASE)
             for match in rupee_matches:
                 try:
                     # Remove commas from numbers (e.g., "3,033" → "3033")
@@ -260,7 +260,7 @@ class ImageParser:
             # Common OCR errors: ₹ → C, z, Z, ?, 2, ~, <, =, %
             # Use word boundary \b to ensure C/c/z/Z are standalone (not part of "Dec", etc.)
             # Allow comma separators in amounts (e.g., 3,033)
-            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|[~<=%]|\b[CczZ])\s*([\d,]+(?:\.\d{1,2})?)', clean_text, re.IGNORECASE)
+            rupee_matches = re.finditer(r'(?:₹|\?|Rs\.?|INR|[~<=£%]|\b[CczZ])\s*([\d,]+(?:\.\d{1,2})?)', clean_text, re.IGNORECASE)
             for match in rupee_matches:
                 try:
                     # Remove commas from numbers (e.g., "3,033" → "3033")
@@ -311,8 +311,13 @@ class ImageParser:
                 try:
                     corrected = float(val_str[1:])  # Strip leading '2'
                     if corrected > 0 and corrected not in existing_values:
-                        ocr_correction_candidates.append((corrected, prio - 10, pos))
-                        logger.debug(f"OCR correction candidate: {corrected} (from {val})")
+                        # For contextual-level matches (prio <= 50), give correction higher priority
+                        # so the stripped value wins over the misread one.
+                        # For rupee-symbol matches (prio >= 80), keep correction lower so the
+                        # genuine value (e.g. real ₹2130) is preserved.
+                        correction_prio = prio + 1 if prio <= 50 else prio - 10
+                        ocr_correction_candidates.append((corrected, correction_prio, pos))
+                        logger.debug(f"OCR correction candidate: {corrected} (from {val}, correction_prio={correction_prio})")
                 except ValueError:
                     pass
         
