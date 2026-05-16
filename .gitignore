@@ -34,3 +34,7 @@ Thumbs.db
 # --- Logs ---
 *.log
 
+# --- Runtime data (tracked as empty dir via .gitkeep) ---
+data/*
+!data/.gitkeep
+

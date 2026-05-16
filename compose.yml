@@ -1,0 +1,42 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    env_file: .env
+    environment:
+      # Override .env values that differ inside Docker networking
+      REDIS_URL: redis://redis:6379/0
+      UTR_TRACKING_FILE: /app/data/processed_utrs.json
+      ALIAS_FILE_PATH: /app/data/aliases.json
+    volumes:
+      - ./data:/app/data
+      - uploads:/tmp/autosplit/uploads
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    command: python worker.py
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      UTR_TRACKING_FILE: /app/data/processed_utrs.json
+      ALIAS_FILE_PATH: /app/data/aliases.json
+    volumes:
+      - ./data:/app/data
+      - uploads:/tmp/autosplit/uploads
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:
+  uploads:
