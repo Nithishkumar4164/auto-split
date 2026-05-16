@@ -90,10 +90,12 @@ def job_status(job_id):
 
 @app.route('/groups', methods=['GET'])
 def get_groups():
-    """Return the list of Splitwise groups (for Termux group selection)."""
+    """Return active/inactive Splitwise groups for Termux group selection."""
     try:
         groups = splitwise_client.get_groups()
-        return jsonify({'success': True, 'groups': [g['name'] for g in groups]})
+        active = [g['name'] for g in groups if g.get('active')]
+        inactive = [g['name'] for g in groups if not g.get('active')]
+        return jsonify({'success': True, 'active': active, 'inactive': inactive})
     except Exception as e:
         logger.error(f"Error fetching groups: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500

@@ -10,25 +10,16 @@
 #        export AUTOSPLIT_TAILSCALE="http://100.x.x.x:8090"   # server's Tailscale IP
 #   2. Place this script in ~/.shortcuts/ and make it executable:
 #        chmod +x ~/.shortcuts/autosplit-upload.sh
-#   3. Requires: Termux:API app + `pkg install termux-api`
+#   3. Requires: Termux:API app + `pkg install termux-api fzf`
 
 set -euo pipefail
 
-# ── Server selection: LAN when on home WiFi, Tailscale otherwise ───────────────
-
-HOME_SSIDS=("Moota_Poochi" "Moota_Poochi_5G")
-
-CURRENT_SSID=$(termux-wifi-connectioninfo 2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin).get('ssid',''))" 2>/dev/null \
-  || echo "")
+# ── Server selection: probe LAN first (500 ms), fall back to Tailscale ────────
 
 SERVER="${AUTOSPLIT_TAILSCALE:-http://100.x.x.x:8090}"
-for ssid in "${HOME_SSIDS[@]}"; do
-  if [[ "$CURRENT_SSID" == "$ssid" ]]; then
+if curl -sf --connect-timeout 0.5 "${AUTOSPLIT_LAN:-http://192.168.1.x:8090}/health" > /dev/null 2>&1; then
     SERVER="${AUTOSPLIT_LAN:-http://192.168.1.x:8090}"
-    break
-  fi
-done
+fi
 
 SHARED_FILE="${1:-}"
 
@@ -50,26 +41,33 @@ GROUPS_JSON=$(curl -sf --connect-timeout 5 "$SERVER/groups" 2>/dev/null) || {
   exit 1
 }
 
-# Build comma-separated list for termux-dialog (append "New group..." option)
-GROUP_LIST=$(echo "$GROUPS_JSON" | python3 -c "
+AUTOSPLIT_FZF_LIST=$(echo "$GROUPS_JSON" | python3 -c "
 import sys, json
-groups = json.load(sys.stdin).get('groups', [])
-groups.append('+ New group...')
-# termux-dialog uses comma-separated values; escape any commas in names
-print(','.join(g.replace(',', ';') for g in groups))
+data = json.load(sys.stdin)
+active = data.get('active', [])
+inactive = data.get('inactive', [])
+lines = active
+if inactive:
+    lines.append('─── settled ───')
+    lines.extend('· ' + g for g in inactive)
+print('\n'.join(lines))
 ")
 
-# ── Group selection dialog ─────────────────────────────────────────────────────
+# ── Group selection with live fuzzy search ────────────────────────────────────
 
-DIALOG_RESULT=$(termux-dialog radio -t "AutoSplit — select group" -v "$GROUP_LIST")
-SELECTED=$(echo "$DIALOG_RESULT" | python3 -c "
-import sys, json
-r = json.load(sys.stdin)
-# code -2 = back button / cancelled
-if r.get('code', -2) == -2:
-    sys.exit(1)
-print(r.get('text', '').strip())
-") || exit 0
+SELECTED=$(printf "%s\n+ New group..." "$AUTOSPLIT_FZF_LIST" | fzf \
+  --prompt="Group: " \
+  --height=50% \
+  --border \
+  --reverse \
+  --no-sort \
+  --header="Type to filter  Enter=select  Esc=cancel") || exit 0
+
+# strip inactive prefix; abort if separator was selected
+[[ "$SELECTED" == "─── settled ───" ]] && exit 0
+SELECTED="${SELECTED#· }"
+
+# ── New group prompt ───────────────────────────────────────────────────────────
 
 if [[ "$SELECTED" == "+ New group..." ]]; then
   NEW_NAME_RESULT=$(termux-dialog text -t "AutoSplit — new group name" -i "e.g. Roommates")

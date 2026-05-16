@@ -245,7 +245,14 @@ class SplitwiseAPIClient(SplitwiseBase):
         try:
             groups = self.splitwise.getGroups()
             self._groups_cache = [
-                {'id': str(g.getId()), 'name': g.getName()}
+                {
+                    'id': str(g.getId()),
+                    'name': g.getName(),
+                    'active': any(
+                        abs(float(b.getAmount())) > 0.01
+                        for b in (g.getBalances() or [])
+                    ),
+                }
                 for g in groups
             ]
             logger.info(f"Retrieved {len(self._groups_cache)} groups")
