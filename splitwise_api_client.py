@@ -244,17 +244,14 @@ class SplitwiseAPIClient(SplitwiseBase):
             return self._groups_cache
         try:
             groups = self.splitwise.getGroups()
-            self._groups_cache = [
-                {
-                    'id': str(g.getId()),
-                    'name': g.getName(),
-                    'active': any(
-                        abs(float(b.getAmount())) > 0.01
-                        for b in (g.getBalances() or [])
-                    ),
-                }
-                for g in groups
-            ]
+            self._groups_cache = []
+            for g in groups:
+                try:
+                    balances = g.getBalances() or []
+                    is_active = any(abs(float(b.getAmount())) > 0.01 for b in balances)
+                except (AttributeError, TypeError, ValueError):
+                    is_active = False
+                self._groups_cache.append({'id': str(g.getId()), 'name': g.getName(), 'active': is_active})
             logger.info(f"Retrieved {len(self._groups_cache)} groups")
             return self._groups_cache
         except Exception as e:
