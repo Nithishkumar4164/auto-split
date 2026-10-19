@@ -6,7 +6,6 @@ from image_parser import ImageParser, TransactionDetails
 from alias_manager import AliasManager
 from utr_tracker import UTRTracker
 from splitwise_base import SplitwiseBase
-from image_source import ImageSourceRouter, ResolvedImage
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -21,48 +20,15 @@ class ExpenseProcessor:
         alias_manager: AliasManager,
         utr_tracker: UTRTracker,
         splitwise_client: SplitwiseBase,
-        image_source_router: ImageSourceRouter,
     ):
         self.image_parser = image_parser
         self.alias_manager = alias_manager
         self.utr_tracker = utr_tracker
         self.splitwise_client = splitwise_client
-        self.image_source_router = image_source_router
 
-    def process_event(self, event_data: Dict) -> Dict:
-        """Unified entry point: resolve any event to a local image, then process it.
-
-        Handles local file paths, Drive events, and GCS events transparently
-        via the ImageSourceRouter.
-        """
-        resolved = self.image_source_router.resolve(event_data)
-        if not resolved:
-            return {
-                'success': False,
-                'error': 'Could not resolve image from event data',
-            }
-
+    def process(self, image_path: str, group_name: Optional[str] = None) -> Dict:
+        """Process a local transaction image and create a Splitwise expense."""
         try:
-            return self._process_resolved_image(resolved)
-        finally:
-            resolved.cleanup()
-
-    # Keep the old entry points as thin wrappers for backward compatibility
-    def process_image(self, image_path: str, group_name: Optional[str] = None) -> Dict:
-        """Process a local transaction image."""
-        return self.process_event({'image_path': image_path, 'group_name': group_name})
-
-    def process_drive_event(self, event_data: Dict) -> Dict:
-        """Process a Google Drive or GCS upload event."""
-        return self.process_event(event_data)
-
-    # ── core pipeline ──────────────────────────────────────────────
-
-    def _process_resolved_image(self, resolved: ResolvedImage) -> Dict:
-        try:
-            image_path = resolved.local_path
-            group_name = resolved.group_name
-
             logger.info(f"Processing image: {image_path}")
 
             # 1. Parse image
@@ -165,4 +131,4 @@ class ExpenseProcessor:
         elif transaction.recipient:
             return f"Payment to {transaction.recipient}"
         else:
-            return f"Transaction - \u20b9{transaction.amount}"
+            return f"Transaction - ₹{transaction.amount}"

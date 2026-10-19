@@ -7,18 +7,14 @@ load_dotenv()
 
 class Config:
     """Application configuration."""
-    
-    # Google Cloud Configuration
-    GOOGLE_CLOUD_PROJECT = os.getenv('GOOGLE_CLOUD_PROJECT', '')
-    GOOGLE_APPLICATION_CREDENTIALS = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '')
-    
-    # Google Drive Configuration
-    DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID', '')
-    SPLITWISE_ROOT_FOLDER = os.getenv('SPLITWISE_ROOT_FOLDER', 'Splitwise')
-    
+
     # Application Configuration
     PORT = int(os.getenv('PORT', 8090))
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+
+    # Redis / Job Queue
+    REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6381/0')
+    UPLOAD_DIR = os.getenv('UPLOAD_DIR', '/tmp/autosplit/uploads')
     
     # File Paths
     UTR_TRACKING_FILE = os.getenv('UTR_TRACKING_FILE', 'processed_utrs.json')

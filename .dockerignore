@@ -49,11 +49,18 @@ temp/
 tmp/
 .DS_Store
 
-# Cloud configuration (not needed in container)
+# Cloud configuration
 cloudbuild.yaml
 .gcloudignore
+deploy.sh
+setup-eventarc.sh
 
-# Service account keys (should be mounted at runtime)
-*.json
-!aliases.example.json
+# Runtime data (bind-mounted from host)
+data/
+
+# Dev / CI only
+termux/
+.claude/
+local-test.sh
+run-tests.sh
 

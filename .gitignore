@@ -24,6 +24,8 @@ htmlcov/
 credentials.json
 token.json
 client_secrets.json
+aliases.json
+aliases.examples.json
 
 # --- OS Specific ---
 .DS_Store
@@ -31,4 +33,8 @@ Thumbs.db
 
 # --- Logs ---
 *.log
+
+# --- Runtime data (tracked as empty dir via .gitkeep) ---
+data/*
+!data/.gitkeep
 

@@ -547,8 +547,8 @@ class ImageParser:
                     # Skip common stop words and transaction-related terms
                     stop_words = {
                         'and', 'with', 'for', 'to', 'from', 'in', 'at', 'the', 'a', 'an', 'split',
-                        'transaction', 'id', 'debited', 'utr', 'powered', 'by', 'bank', 
-                        'transfer', 'payment', 'details', 'ves', 'lia', 'message'
+                        'transaction', 'id', 'debited', 'utr', 'powered', 'by', 'bank',
+                        'transfer', 'payment', 'details', 'ves', 'lia', 'message', 'phonepe'
                     }
                     if clean_word in stop_words:
                         continue

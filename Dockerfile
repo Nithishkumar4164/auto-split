@@ -32,16 +32,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create directories for data files
-RUN mkdir -p /app/data && \
-    mkdir -p /tmp/autosplit
+# Persistent data and upload staging dirs (both bind-mounted / volumed in compose)
+RUN mkdir -p /app/data /tmp/autosplit/uploads
 
-# Set Tesseract command path
 ENV TESSERACT_CMD=/usr/bin/tesseract
 
-# Expose port
 EXPOSE 8090
 
-# Run the application with gunicorn
+# Default: web server. Worker overrides this with: python worker.py
 CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 main:app
 

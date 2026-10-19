@@ -1,6 +1,7 @@
 """Splitwise API client using the official Python SDK."""
 import logging
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from splitwise import Splitwise
@@ -244,10 +245,21 @@ class SplitwiseAPIClient(SplitwiseBase):
             return self._groups_cache
         try:
             groups = self.splitwise.getGroups()
-            self._groups_cache = [
-                {'id': str(g.getId()), 'name': g.getName()}
-                for g in groups
-            ]
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            self._groups_cache = []
+            for g in groups:
+                try:
+                    balances = g.getBalances() or []
+                    has_balance = any(abs(float(b.getAmount())) > 0.01 for b in balances)
+                except (AttributeError, TypeError, ValueError):
+                    has_balance = False
+                try:
+                    updated_at = datetime.fromisoformat(g.getUpdatedAt().replace('Z', '+00:00'))
+                    recently_active = updated_at >= cutoff
+                except (AttributeError, TypeError, ValueError):
+                    recently_active = False
+                is_active = has_balance or recently_active
+                self._groups_cache.append({'id': str(g.getId()), 'name': g.getName(), 'active': is_active})
             logger.info(f"Retrieved {len(self._groups_cache)} groups")
             return self._groups_cache
         except Exception as e:
